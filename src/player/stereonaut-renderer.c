@@ -180,6 +180,13 @@ struct ui_texture {
     bool ready;
 };
 
+/* Hysteretic press/release edge detector for one analog button (trigger),
+ * debounced with separate press/release thresholds. See button_update. */
+struct button {
+    bool down;       /* debounced physical state */
+    bool suppressed; /* ignore the current press until a genuine release */
+};
+
 struct app {
     XrInstance xr;
     XrSystemId system;
@@ -321,7 +328,7 @@ struct app {
     XrSpace gaze_space;
     bool gaze_logged;
     int stick_direction[2]; /* -1 left, +1 right, 0 centred */
-    bool select_down[2];
+    struct button select[2];
     bool has_valve_frame_controller;
     bool has_pcvr_controller;
     bool has_generic_controller;
@@ -2910,6 +2917,37 @@ static int read_stick(struct app *app, unsigned hand)
     return 0;
 }
 
+/* One frame of a button: returns true on the rising edge of a new press.
+ * Survives focus loss: while the action is inactive the last known state is
+ * held and no edge fires, so a trigger kept down across an OpenXR focus blip
+ * (session bouncing VISIBLE<->FOCUSED) never becomes a phantom press and never
+ * leaves the button stuck. A genuine release re-arms the button; inactivity is
+ * treated as "unknown", not a release, so suppression survives it. */
+static bool button_update(struct button *b, bool active, float value,
+                          float press, float release, bool *held)
+{
+    bool was = b->down;
+    if (active) {
+        if (!b->down && value >= press)
+            b->down = true;
+        else if (b->down && value < release)
+            b->down = false;
+        if (!b->down)
+            b->suppressed = false; /* genuine release re-arms */
+    }
+    if (held)
+        *held = b->down;
+    return active && b->down && !was && !b->suppressed;
+}
+
+/* Swallow the current/held press until the user genuinely lets go and presses
+ * again. Used after "back" so the trigger still held from exiting a video does
+ * not immediately activate whatever the browser lands on. */
+static void button_suppress(struct button *b)
+{
+    b->suppressed = true;
+}
+
 static void read_select(struct app *app, unsigned hand,
                         struct hand_input *input)
 {
@@ -2921,16 +2959,11 @@ static void read_select(struct app *app, unsigned hand,
     XrActionStateFloat state = {.type = XR_TYPE_ACTION_STATE_FLOAT};
     need_xr("xrGetActionStateFloat",
             xrGetActionStateFloat(app->session, &info, &state));
-    bool down = app->select_down[hand];
-    if (!state.isActive)
-        down = false;
-    else if (!down && state.currentState >= SELECT_PRESS_THRESHOLD)
-        down = true;
-    else if (down && state.currentState < SELECT_RELEASE_THRESHOLD)
-        down = false;
-    input->select_edge = down && !app->select_down[hand];
-    input->select_held = down;
-    app->select_down[hand] = down;
+    input->select_edge = button_update(&app->select[hand], state.isActive,
+                                       state.currentState,
+                                       SELECT_PRESS_THRESHOLD,
+                                       SELECT_RELEASE_THRESHOLD,
+                                       &input->select_held);
 }
 
 static bool pressed_edge(const XrActionStateBoolean *state)
@@ -4063,7 +4096,8 @@ static void end_playback(struct app *app)
     /* The trigger that pressed "back" is usually still held: treat it as
      * held so the browser only reacts after a release (it could otherwise
      * land on "Beenden" and close the program). */
-    app->select_down[0] = app->select_down[1] = true;
+    button_suppress(&app->select[0]);
+    button_suppress(&app->select[1]);
     trickplay_open(app->trickplay, NULL);
     app->details_valid = false;
     ui_image_free(app->preview);
@@ -4114,7 +4148,8 @@ static void begin_playback(struct app *app, int fd, const char *location)
     app->awaiting_command = false;
     app->eos_received = false;
     app->ui_dirty = true;
-    app->select_down[0] = app->select_down[1] = true; /* see end_playback */
+    button_suppress(&app->select[0]); /* see end_playback */
+    button_suppress(&app->select[1]);
     printf("playback_attached\n");
 }
 

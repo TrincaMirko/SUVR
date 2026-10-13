@@ -340,6 +340,35 @@ static void must_ioctl(unsigned long request, void *argument, const char *what)
         fail_errno(what);
 }
 
+/* Orderly decoder teardown for every exit path (normal, seek, and error via
+ * atexit). STREAMOFF + REQBUFS count=0 + close lets the Iris firmware drop
+ * the HFI session (close_session -> iris_hfi_session_close). An abrupt close
+ * can leave a ghost session that still counts against the core mbps/mbpf
+ * budget (check_core_mbps_mbpf), which is what makes later 8K sessions fail
+ * with -12 ("current session not supported") until the headset is reset.
+ * Best-effort: the firmware may reject STREAMOFF after a refused STREAMON. */
+static void release_decoder(void)
+{
+    if (video_fd < 0)
+        return;
+    enum v4l2_buf_type types[2] = {
+        V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+        V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+    };
+    for (int i = 0; i < 2; i++)
+        xioctl(VIDIOC_STREAMOFF, &types[i]);
+    for (int i = 0; i < 2; i++) {
+        struct v4l2_requestbuffers zero = {
+            .count = 0,
+            .type = types[i],
+            .memory = V4L2_MEMORY_MMAP,
+        };
+        xioctl(VIDIOC_REQBUFS, &zero);
+    }
+    close(video_fd);
+    video_fd = -1;
+}
+
 static int fd_ioctl(int fd, unsigned long request, void *argument)
 {
     int result;
@@ -2869,6 +2898,13 @@ open_decoder:
     video_fd = open(DECODED_VIDEO_IRIS_DEVICE, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (video_fd < 0)
         fail_errno("open /dev/video-dec0");
+    /* Safety net: release the HFI session even if we abort before the normal
+     * teardown (e.g. REQBUFS fails with -12 on an 8K session). */
+    static bool decoder_atexit_registered;
+    if (!decoder_atexit_registered) {
+        atexit(release_decoder);
+        decoder_atexit_registered = true;
+    }
     struct v4l2_capability capability = {0};
     must_ioctl(VIDIOC_QUERYCAP, &capability, "VIDIOC_QUERYCAP");
     printf("v4l2_device=/dev/video-dec0 driver=%s card=%s bus=%s\n",
@@ -3452,24 +3488,12 @@ open_decoder:
         /* After a failed seek in place the queues are already off, and
          * Iris may reject STREAMOFF (EINVAL after a refused STREAMON);
          * closing the device below cleans up either way. */
-        if (capture_queue_closed) {
+        if (capture_queue_closed)
             fprintf(stderr, "seek_in_place_failed restarting=1\n");
-        } else {
-            if (capture_started) {
-                type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-                must_ioctl(VIDIOC_STREAMOFF, &type,
-                           "VIDIOC_STREAMOFF CAPTURE control");
-            }
-            type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-            must_ioctl(VIDIOC_STREAMOFF, &type,
-                       "VIDIOC_STREAMOFF OUTPUT control");
-        }
         for (unsigned i = 0; i < output_count; ++i)
             if (munmap(outputs[i].mapping, outputs[i].length) < 0)
                 fail_errno("munmap OUTPUT control");
-        if (close(video_fd) < 0)
-            fail_errno("close /dev/video-dec0 control");
-        video_fd = -1;
+        release_decoder();
         for (unsigned i = 0; i < capture_count; ++i)
             if (captures[i].dma_buf_fd >= 0 &&
                 close(captures[i].dma_buf_fd) < 0)
@@ -3546,17 +3570,11 @@ open_decoder:
            decode_stats.maximum_ms);
     wait_renderer(options.frame_limit == 0); /* test runs stop after N */
 
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    must_ioctl(VIDIOC_STREAMOFF, &type, "VIDIOC_STREAMOFF CAPTURE");
-    type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    must_ioctl(VIDIOC_STREAMOFF, &type, "VIDIOC_STREAMOFF OUTPUT");
     for (unsigned i = 0; i < output_count; i++) {
         if (munmap(outputs[i].mapping, outputs[i].length) < 0)
             fail_errno("munmap OUTPUT");
     }
-    if (close(video_fd) < 0)
-        fail_errno("close /dev/video-dec0");
-    video_fd = -1;
+    release_decoder();
     for (unsigned i = 0; i < capture_count; ++i) {
         if (captures[i].dma_buf_fd >= 0 && close(captures[i].dma_buf_fd) < 0)
             fail_errno("close CAPTURE DMA-BUF");

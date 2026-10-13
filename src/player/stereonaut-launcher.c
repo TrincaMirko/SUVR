@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -266,9 +268,48 @@ static void shutdown_host(void)
     }
 }
 
+/* Redirect stdout/stderr into <exe_dir>/log/stereonaut.1.log, keeping the 3
+ * most recent runs (oldest dropped, rest shifted down). Children inherit the
+ * descriptors, so this single redirect also captures the host and sessions. */
+static void setup_logging(void)
+{
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n < 0)
+        return;
+    exe[n] = '\0';
+    char *slash = strrchr(exe, '/');
+    if (!slash)
+        return;
+    *slash = '\0';
+
+    char dir[PATH_MAX + 8];
+    snprintf(dir, sizeof(dir), "%s/log", exe);
+    mkdir(dir, 0755);
+
+    char a[PATH_MAX + 64], b[PATH_MAX + 64];
+    snprintf(a, sizeof(a), "%s/stereonaut.3.log", dir);
+    unlink(a);
+    for (int i = 2; i >= 1; i--) {
+        snprintf(a, sizeof(a), "%s/stereonaut.%d.log", dir, i);
+        snprintf(b, sizeof(b), "%s/stereonaut.%d.log", dir, i + 1);
+        rename(a, b);
+    }
+    snprintf(a, sizeof(a), "%s/stereonaut.1.log", dir);
+    int fd = open(a, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        return;
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    if (fd > STDERR_FILENO)
+        close(fd);
+}
+
 int main(int argc, char **argv)
 {
+    setup_logging();
     setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
     signal(SIGPIPE, SIG_IGN);
     bool play_only = argc >= 3 && strcmp(argv[1], "--play") == 0;
     if ((!play_only && argc > 2) || (argc >= 2 && !play_only &&
