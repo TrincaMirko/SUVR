@@ -247,6 +247,13 @@ int media_demux_open(struct media_demux **result, const char *path,
         av_dict_set(&options, "rw_timeout", "20000000", 0);
         av_dict_set(&options, "reconnect", "1", 0);
         av_dict_set(&options, "reconnect_delay_max", "2", 0);
+        /* Reconnect mid-stream, not only on timeout, and keep the TCP
+         * connection alive so byte-range seeks reuse it instead of
+         * reopening. A larger avio buffer absorbs WiFi jitter on the
+         * high-bitrate 8K60 10-bit path. */
+        av_dict_set(&options, "reconnect_streamed", "1", 0);
+        av_dict_set(&options, "multiple_requests", "1", 0);
+        av_dict_set(&options, "buffer_size", "4194304", 0);
     }
     int av_result = avformat_open_input(&demux->format, path, NULL, &options);
     av_dict_free(&options);
