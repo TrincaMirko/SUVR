@@ -41,6 +41,14 @@ Relative to upstream `stereonaut`:
   frame); closing a WebDAV video returns to the folder it was played from
   instead of an empty page.
 
+- **One-file installer.** `src/player/make-selfinstall.sh` builds everything
+  and packs the binaries, shaders, language files and a source copy into a
+  single self-extracting `SUVR-install.run` (makeself style: a shell stub
+  followed by a gzip tarball). Running `sh SUVR-install.run` on the headset
+  installs into `~/.local` (binaries, shaders, languages, desktop entry) and
+  keeps the source copy the launcher uses to rebuild itself after a SteamOS
+  library bump — no compiler needed on the target for a normal install.
+
 The sections below are from the upstream project and describe the base player.
 
 A native VR video player for the **Steam Frame** (SteamOS, aarch64,

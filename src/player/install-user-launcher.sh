@@ -34,6 +34,10 @@ install -m 0644 \
     "$build_dir/ui-panel.frag.spv" \
     "$install_dir/"
 
+# Language catalogues, loaded at runtime relative to the launcher's cwd.
+install -d "$install_dir/lang"
+install -m 0644 "$script_dir/lang/"* "$install_dir/lang/"
+
 # Optional: the Turnip build with TP10 sampling (tools/mesa-tp10), copied to
 # build/libvulkan_freedreno.so. Only Stereonaut loads it; it enables native
 # HEVC Main10. Without it Main10 is transcoded by Jellyfin as before.
