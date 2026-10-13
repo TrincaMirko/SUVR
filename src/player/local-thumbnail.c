@@ -12,6 +12,7 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 #include <libavutil/pixdesc.h>
 
 /* ---- sidecar pictures --------------------------------------------------- */
@@ -170,16 +171,19 @@ static int encode_jpeg(const uint8_t *rgb, int width, int height, char **data,
     return 0;
 }
 
-static int key_frame_jpeg(const char *path, int max_width, char **data,
-                          size_t *size)
+static int key_frame_jpeg(const char *path, const char *headers,
+                          int max_width, char **data, size_t *size)
 {
     AVFormatContext *format = NULL;
     AVCodecContext *decoder = NULL;
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
+    AVDictionary *options = NULL;
     int result = -1;
+    if (headers && headers[0])
+        av_dict_set(&options, "headers", headers, 0);
     if (!packet || !frame ||
-        avformat_open_input(&format, path, NULL, NULL) < 0 ||
+        avformat_open_input(&format, path, NULL, &options) < 0 ||
         avformat_find_stream_info(format, NULL) < 0)
         goto done;
     const AVCodec *codec = NULL;
@@ -221,6 +225,7 @@ static int key_frame_jpeg(const char *path, int max_width, char **data,
         free(rgb);
     }
 done:
+    av_dict_free(&options);
     av_frame_free(&frame);
     av_packet_free(&packet);
     avcodec_free_context(&decoder);
@@ -236,5 +241,13 @@ int local_thumbnail_jpeg(const char *path, int max_width, char **data,
     *data = read_sidecar(path, size);
     if (*data)
         return 0;
-    return key_frame_jpeg(path, max_width, data, size);
+    return key_frame_jpeg(path, NULL, max_width, data, size);
+}
+
+int local_thumbnail_url_jpeg(const char *url, const char *headers,
+                             int max_width, char **data, size_t *size)
+{
+    *data = NULL;
+    *size = 0;
+    return key_frame_jpeg(url, headers, max_width, data, size);
 }

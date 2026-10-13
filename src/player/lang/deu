@@ -1,0 +1,189 @@
+# Stereonaut UI-Texte — Deutsch.
+# Format: key=value. Zeilen mit # und Leerzeilen werden ignoriert.
+language.name=Deutsch
+
+rail.start=Start
+rail.jellyfin=Jellyfin
+rail.local=Lokale Dateien
+rail.webdav=WebDAV
+rail.search=Suchen
+rail.options=Optionen
+rail.exit=Beenden
+
+options.language=Sprache
+
+app.subtitle=VR-Videoplayer
+
+status.loading=Lade …
+status.empty=Keine Einträge
+
+detail.title=Details
+detail.hint=Zeige mit dem Controller auf einen Titel, um Details zu sehen.
+detail.play_hint=Trigger drücken zum Abspielen
+detail.type=Typ
+detail.duration=Dauer
+detail.stopped=Gestoppt
+detail.watched=Gesehen
+detail.year=Jahr
+detail.source=Quelle
+detail.format=Format
+detail.codec=Codec
+detail.size=Größe
+detail.file=Datei
+detail.modified=Geändert
+
+value.video=Video
+value.folder=Ordner
+value.yes=Ja
+value.local=Lokal
+
+badge.watched=Gesehen
+
+filter.chip=Filter
+filter.active=Gefiltert
+filter.genres=Genres
+filter.studios=Studios
+filter.cast=Darsteller
+filter.clear=Filter aufheben
+
+sort.name=Name
+sort.random=Zufällig
+sort.community=Community-Bewertung
+sort.critic=Kritikerbewertung
+sort.added=Hinzugefügt am
+sort.played=Abgespielt am
+sort.agerating=Altersfreigabe
+sort.playcount=Wiedergabezähler
+sort.released=Veröffentlichungsdatum
+sort.runtime=Laufzeit
+sort.modified=Änderungsdatum
+sort.filesize=Dateigröße
+
+pager.previous=Vorherige
+pager.next=Nächste
+
+search.placeholder=Titel in Jellyfin suchen …
+
+key.space=Leerzeichen
+key.backspace=Löschen
+key.cancel=Abbrechen
+key.search=Suchen
+key.shift=Umschalt
+key.symbols=?123
+key.letters=ABC
+key.next=Weiter
+key.save=Speichern
+
+resume.question=Zuletzt gestoppt – wo weiterschauen?
+resume.at=Ab %s
+resume.restart=Von vorn
+
+# --- Player-Panel (im Video) ---
+adjust.height=Höhe
+adjust.slide=Seitlich
+adjust.tilt=Neigung
+adjust.yaw=Drehung
+adjust.roll=Kippen
+adjust.stereo_x=Stereo horiz.
+adjust.autofocus=Autofokus
+adjust.focus_distance=Näher als
+adjust.focus_hysteresis=Hysterese
+adjust.focus_fade=Überblenden
+adjust.brightness=Helligkeit
+adjust.contrast=Kontrast
+adjust.saturation=Sättigung
+label.strength=Stärke
+label.volume=Lautstärke
+value.off=Aus
+value.on=An
+value.instant=Sofort
+value.muted=Stumm
+tab.view=Ansicht
+tab.picture=Bild
+tab.focus=Fokus
+tab.buttons=Tasten
+mode.perspective=Perspektive
+proj.flat=Flach
+proj.src_default=Projektion (Standard)
+proj.src_name=Projektion (aus Dateiname)
+proj.src_image=Projektion (im Bild erkannt)
+proj.user=Projektion
+eyes.swap=Augen tauschen
+eyes.swapped=Augen getauscht
+autohide.never=Nie
+autohide.5s=nach 5 s
+autohide.15s=nach 15 s
+view.scrub_preview=Vorschau beim Spulen
+view.fov=Sichtfeld (Perspektive)
+view.autohide=Panel ausblenden (Wiedergabe)
+view.head_motion=Kopfbewegung (6DoF)
+view.orientation=Ausrichtung
+view.av1=AV1 bis 4K per CPU (Test)
+action.center=Zentrieren
+action.reset=Zurücksetzen
+action.remove=Entfernen
+action.cancel=Abbrechen
+position.note=Neigung gilt für alle Titel, alles andere je Titel.
+picture.blacklevel=Schwarzwert
+level.low=Tief
+level.full=Voll
+level.norm_hint=Norm: Schwarz 16, Weiß 235
+level.low_hint=Tief: Zeichnung unter Schwarz
+level.full_hint=Voll: Full Range 0–255
+focus.autofocus=Autofokus (nur 180°/360° mit SBS/TB)
+focus.fade_label=Dauer eines Fokuswechsels
+focus.refocus=Neu fokussieren ab Abstandsänderung
+threshold.always=Immer
+threshold.near=Nur nah
+focus.trigger=Auslösen
+focus.far_hint=Weiter weg: Video unverändert
+focus.limit=Grenze (nur bei „Nur nah“)
+focus.check=Messung prüfen
+focus.show_gaze=Blick anzeigen
+focus.hint1=Nahe Motive werden auf etwa
+focus.hint2=1 m zurückgeschoben.
+focus.global_note=Gilt für alle Titel.
+bind.seek=Spulen (−10 s | +10 s)
+bind.volume=Lautstärke (− | +)
+bind.video=Video (vorheriges | nächstes)
+bind.tilt=Neigung (runter | hoch)
+bind.zoom=Zoom (weg | näher)
+bind.playpause=Wiedergabe / Pause
+learn.press=drücken …
+learn.assign=Belegen: %s
+learn.hint1=Taste drücken oder für eine
+learn.hint2=Kombination die erste halten
+learn.hint3=und die zweite drücken.
+buttons.hint1=Feld wählen, dann am Controller
+buttons.hint2=die Taste oder Kombination
+buttons.hint3=drücken. Der Griff geht nur in
+buttons.hint4=Kombinationen. Gilt für alle Titel.
+buttons.defaults=Standardbelegung
+end.stop=Am Ende: Stopp
+end.repeat=Am Ende: Wiederholen
+end.next=Am Ende: Nächster
+info.none=Keine Informationen – nur Jellyfin-Titel haben eine Beschreibung.
+info.description=Beschreibung
+info.no_description=Keine Beschreibung vorhanden.
+info.year=Jahr
+info.rating=Bewertung
+info.people=Mitwirkende
+
+# --- Controller-Tasten & Aktionen ---
+bind.unassigned=nicht belegt
+bindaction.volume_down=Leiser
+bindaction.volume_up=Lauter
+bindaction.previous=Vorheriges Video
+bindaction.next=Nächstes Video
+bindaction.tilt_down=Neigung runter
+bindaction.tilt_up=Neigung hoch
+bindaction.zoom_out=Zoom weg
+bindaction.zoom_in=Zoom näher
+bindaction.playpause=Wiedergabe/Pause
+btn.stick_click=Stick-Klick
+btn.grip=Griff
+btn.dpad_up=Kreuz ↑
+btn.dpad_down=Kreuz ↓
+btn.dpad_left=Kreuz ←
+btn.dpad_right=Kreuz →
+btn.menu=Menü

@@ -34,6 +34,27 @@ static json_object *lookup(const char *key, json_type type, json_object **root)
     return value;
 }
 
+static void store(const char *key, json_object *value);
+
+bool settings_get_string(const char *key, char *out, size_t size)
+{
+    json_object *root = NULL;
+    json_object *value = lookup(key, json_type_string, &root);
+    bool found = false;
+    if (value) {
+        snprintf(out, size, "%s", json_object_get_string(value));
+        found = true;
+    }
+    if (root)
+        json_object_put(root);
+    return found;
+}
+
+void settings_set_string(const char *key, const char *value)
+{
+    store(key, json_object_new_string(value));
+}
+
 int settings_get_int(const char *key, int fallback)
 {
     json_object *root = NULL;

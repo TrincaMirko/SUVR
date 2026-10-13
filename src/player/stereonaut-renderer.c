@@ -4097,11 +4097,12 @@ static void begin_playback(struct app *app, int fd, const char *location)
     else
         app->title_key[0] = '\0';
     load_adjust(app, false);
-    /* Centre the dome on the head at the first rendered frame; the gaze
-     * yaw only changes on "zentrieren" (SteamVR's seated origin faces the
-     * viewer already). */
+    /* Centre the dome on the head and the gaze direction at the first
+     * rendered frame, same as "zentrieren": the video then faces wherever
+     * the viewer is looking at playback start, regardless of where the
+     * SteamVR seated origin happens to point. */
     app->recenter_pending = true;
-    app->recenter_yaw = false;
+    app->recenter_yaw = true;
     app->dome_yaw = 0.0f;
     app->autofocus_offset = 0.0f;
     app->autofocus_speed = 0.0f;
@@ -5001,6 +5002,10 @@ int main(int argc, char **argv)
     app.scrub_hand = -1;
     app.learn_action = -1;
     app.awaiting_frame = true;
+    char language[16];
+    i18n_load(settings_get_string("language", language, sizeof(language))
+                  ? language
+                  : "eng");
     char browser_error[256] = {0};
     if (browser_ui_open(&app.browser, "root:", NULL, browser_error,
                         sizeof(browser_error)) < 0) {

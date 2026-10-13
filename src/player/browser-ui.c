@@ -5,6 +5,7 @@
 #include "settings.h"
 #include "thumbnails.h"
 #include "ui-draw.h"
+#include "webdav.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -74,24 +75,40 @@
 #define FILTER_MENU_Y (FILTER_Y + FILTER_H + 8)
 #define FILTER_MENU_H (4 * MENU_ITEM_H + 16)
 
-/* On-screen keyboard of the search over the grid: four rows of eleven
- * keys and a row of actions. */
+/* Options overlay (language choice), opened from the rail. */
+#define OPT_MENU_W 470
+#define OPT_MENU_X (RAIL_ITEM_X + RAIL_ITEM_W + 16)
+#define OPT_MENU_Y 300
+#define OPT_HEADER_H 44
+/* ponytail: hit rect bounded to 8 languages; extra files still draw and
+ * select via the row math, the bound only caps the clickable area. */
+#define OPT_MENU_H (OPT_HEADER_H + 8 * MENU_ITEM_H + 16)
+
+/* On-screen keyboard tool: four rows of ten keys over a row of actions
+ * (shift, symbol toggle, space, delete, cancel, confirm). Shift uppercases
+ * the letter layer; the symbol layer carries punctuation and URL glyphs. */
 #define KB_W 1120
 #define KB_X (CENTER_X + (CENTER_W - KB_W) / 2)
 #define KB_Y 180
-#define KEY_W 88
+#define KEY_W 96
 #define KEY_H 66
 #define KEY_GAP 10
 #define KEY_TOP (KB_Y + 120)
 #define KB_H (120 + 5 * (KEY_H + KEY_GAP) + 16)
 #define KEY_ROWS 4
-#define KEY_COLUMNS 11
+#define KEY_COLUMNS 10
 
-static const char *const keyboard_keys[KEY_ROWS][KEY_COLUMNS] = {
-    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "ß"},
-    {"q", "w", "e", "r", "t", "z", "u", "i", "o", "p", "ü"},
-    {"a", "s", "d", "f", "g", "h", "j", "k", "l", "ö", "ä"},
-    {"y", "x", "c", "v", "b", "n", "m", "-", ".", "'", "&"},
+static const char *const letter_keys[KEY_ROWS][KEY_COLUMNS] = {
+    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+    {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+    {"a", "s", "d", "f", "g", "h", "j", "k", "l", ";"},
+    {"z", "x", "c", "v", "b", "n", "m", ",", ".", "/"},
+};
+static const char *const symbol_keys[KEY_ROWS][KEY_COLUMNS] = {
+    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+    {"!", "@", "#", "$", "%", "&", "*", "(", ")", "-"},
+    {"_", "=", "+", "/", ":", ";", "\"", "'", "?", "~"},
+    {",", ".", "<", ">", "[", "]", "{", "}", "|", "\\"},
 };
 
 /* "Resume or restart" prompt over the grid. */
@@ -127,16 +144,29 @@ enum {
     ID_FILTER = 83,
     ID_FILTER_ITEM = 84, /* 84 .. 87 */
     ID_FILTER_AREA = 88, /* hit test only: resolved with the model */
-    ID_KEY = 100,        /* 100 .. 143: keyboard_keys row by row */
-    ID_KEY_SPACE = 144,
-    ID_KEY_BACKSPACE = 145,
-    ID_KEY_CANCEL = 146,
-    ID_KEY_SEARCH = 147,
-    ID_KEYBOARD_AREA = 148, /* hit test only: resolved with the model */
+    ID_KEY = 100,        /* 100 .. 139: key grid row by row (4 x 10) */
+    ID_KEY_SHIFT = 140,
+    ID_KEY_SYMBOLS = 141,
+    ID_KEY_SPACE = 142,
+    ID_KEY_BACKSPACE = 143,
+    ID_KEY_CANCEL = 144,
+    ID_KEY_ENTER = 145,
+    ID_KEYBOARD_AREA = 146, /* hit test only: resolved with the model */
+    ID_OPTION_ITEM = 150,  /* 150 ..: one per language row */
+    ID_OPTION_AREA = 190,  /* hit test only: resolved with the model */
 };
 
 /* What the stateless hit test reports (menus are open or not). */
-enum { HIT_MENU = 1, HIT_PROMPT = 2, HIT_FILTER = 4, HIT_KEYBOARD = 8 };
+enum {
+    HIT_MENU = 1, HIT_PROMPT = 2, HIT_FILTER = 4, HIT_KEYBOARD = 8,
+    HIT_OPTIONS = 16,
+};
+
+/* What the keyboard tool does when the user confirms (ID_KEY_ENTER). */
+enum {
+    KB_PURPOSE_NONE, KB_PURPOSE_SEARCH,
+    KB_PURPOSE_WEBDAV_URL, KB_PURPOSE_WEBDAV_USER, KB_PURPOSE_WEBDAV_PASS,
+};
 
 /* Rectangle of keyboard control `id`; false for other ids. */
 static bool key_rect(int id, int *x, int *y, int *width)
@@ -148,21 +178,36 @@ static bool key_rect(int id, int *x, int *y, int *width)
         *y = KEY_TOP + (index / KEY_COLUMNS) * (KEY_H + KEY_GAP);
         return true;
     }
-    static const int widths[4] = {438, 200, 200, 200};
-    if (id < ID_KEY_SPACE || id > ID_KEY_SEARCH)
+    static const int widths[6] = {140, 140, 300, 150, 140, 148};
+    if (id < ID_KEY_SHIFT || id > ID_KEY_ENTER)
         return false;
     *x = KB_X + 26;
-    for (int i = ID_KEY_SPACE; i < id; ++i)
-        *x += widths[i - ID_KEY_SPACE] + KEY_GAP;
+    for (int i = ID_KEY_SHIFT; i < id; ++i)
+        *x += widths[i - ID_KEY_SHIFT] + KEY_GAP;
     *y = KEY_TOP + KEY_ROWS * (KEY_H + KEY_GAP);
-    *width = widths[id - ID_KEY_SPACE];
+    *width = widths[id - ID_KEY_SHIFT];
     return true;
 }
 
+/* The glyph a grid key types, honouring the shift and symbol layers. */
+static void key_label(const struct browser_ui *ui, int id, char *out,
+                      size_t size)
+{
+    int index = id - ID_KEY;
+    const char *base = ui->kb_symbols
+                           ? symbol_keys[index / KEY_COLUMNS]
+                                        [index % KEY_COLUMNS]
+                           : letter_keys[index / KEY_COLUMNS]
+                                        [index % KEY_COLUMNS];
+    snprintf(out, size, "%s", base);
+    if (!ui->kb_symbols && ui->kb_shift && out[0] >= 'a' && out[0] <= 'z')
+        out[0] = (char)(out[0] - 32);
+}
+
 static const char *const sort_labels[JF_SORT_COUNT] = {
-    "Name", "Zufällig", "Community-Bewertung", "Kritikerbewertung",
-    "Hinzugefügt am", "Abgespielt am", "Altersfreigabe", "Wiedergabezähler",
-    "Veröffentlichungsdatum", "Laufzeit",
+    "sort.name", "sort.random", "sort.community", "sort.critic",
+    "sort.added", "sort.played", "sort.agerating", "sort.playcount",
+    "sort.released", "sort.runtime",
 };
 
 /* Dates, ratings and counts are most useful newest/highest first. */
@@ -173,7 +218,7 @@ static bool default_descending(int sort)
 }
 
 static const char *const local_sort_labels[FILE_BROWSER_SORT_COUNT] = {
-    "Name", "Änderungsdatum", "Dateigröße",
+    "sort.name", "sort.modified", "sort.filesize",
 };
 
 static bool local_location(const struct browser_ui *ui)
@@ -202,7 +247,7 @@ static bool filtered(const struct browser_ui *ui)
 }
 
 static const char *const filter_labels[4] = {
-    "Genres", "Studios", "Darsteller", "Filter aufheben",
+    "filter.genres", "filter.studios", "filter.cast", "filter.clear",
 };
 static const char *const filter_keys[3] = {"genre", "studio", "person"};
 
@@ -218,7 +263,7 @@ static int sort_count(const struct browser_ui *ui)
 
 static const char *sort_label(const struct browser_ui *ui, int sort)
 {
-    return local_location(ui) ? local_sort_labels[sort] : sort_labels[sort];
+    return tr(local_location(ui) ? local_sort_labels[sort] : sort_labels[sort]);
 }
 
 static int active_sort(const struct browser_ui *ui)
@@ -238,7 +283,8 @@ static bool has_direction(const struct browser_ui *ui, int sort)
     return local_location(ui) || sort != JF_SORT_RANDOM;
 }
 
-enum { RAIL_START, RAIL_JELLYFIN, RAIL_LOCAL, RAIL_SEARCH, RAIL_COUNT };
+enum { RAIL_START, RAIL_JELLYFIN, RAIL_LOCAL, RAIL_WEBDAV, RAIL_SEARCH,
+       RAIL_OPTIONS, RAIL_COUNT };
 _Static_assert(ID_RAIL + RAIL_COUNT <= ID_EXIT, "rail ids overlap");
 
 static const struct ui_color color_card = UI_RGBA(17, 18, 22, 240);
@@ -274,6 +320,8 @@ static int rail_active(const struct browser_ui *ui)
         return RAIL_SEARCH;
     if (strncmp(ui->location, "jf:", 3) == 0)
         return RAIL_JELLYFIN;
+    if (strncmp(ui->location, "webdav:", 7) == 0)
+        return RAIL_WEBDAV;
     if (!ui->location[0] || strcmp(ui->location, "root:") == 0)
         return RAIL_START;
     return RAIL_LOCAL;
@@ -375,21 +423,53 @@ static void draw_rail(struct browser_ui *ui, struct ui_canvas *canvas,
         enum ui_icon icon;
         const char *label;
     } items[RAIL_COUNT] = {
-        {UI_ICON_HOME, "Start"},
-        {UI_ICON_SERVER, "Jellyfin"},
-        {UI_ICON_DISK, "Lokale Dateien"},
-        {UI_ICON_SEARCH, "Suchen"},
+        {UI_ICON_HOME, "rail.start"},
+        {UI_ICON_SERVER, "rail.jellyfin"},
+        {UI_ICON_DISK, "rail.local"},
+        {UI_ICON_SERVER, "rail.webdav"},
+        {UI_ICON_SEARCH, "rail.search"},
+        {UI_ICON_INFO, "rail.options"},
     };
     int active = rail_active(ui);
     for (int i = 0; i < RAIL_COUNT; ++i)
         if (hover < 0 || hover == ID_RAIL + i)
             draw_rail_item(ui, canvas,
                            RAIL_FIRST_Y + i * (RAIL_ITEM_H + 12),
-                           items[i].icon, items[i].label, i == active,
+                           items[i].icon, tr(items[i].label),
+                           i == active || (i == RAIL_OPTIONS &&
+                                           ui->options_open),
                            hover == ID_RAIL + i);
     if (hover < 0 || hover == ID_EXIT)
-        draw_rail_item(ui, canvas, RAIL_EXIT_Y, UI_ICON_POWER, "Beenden",
-                       false, hover == ID_EXIT);
+        draw_rail_item(ui, canvas, RAIL_EXIT_Y, UI_ICON_POWER,
+                       tr("rail.exit"), false, hover == ID_EXIT);
+}
+
+/* Options overlay: a titled card with one row per installed language. */
+static void draw_options_menu(struct browser_ui *ui, struct ui_canvas *canvas,
+                              int hover)
+{
+    int count = ui->language_count;
+    int height = OPT_HEADER_H + count * MENU_ITEM_H + 16;
+    ui_shadow_round_rect(canvas, OPT_MENU_X, OPT_MENU_Y + 6, OPT_MENU_W,
+                         height, 22, 24, color_shadow);
+    ui_fill_round_rect(canvas, OPT_MENU_X, OPT_MENU_Y, OPT_MENU_W, height, 22,
+                       UI_RGBA(30, 32, 39, 255));
+    ui_stroke_round_rect(canvas, OPT_MENU_X, OPT_MENU_Y, OPT_MENU_W, height,
+                         22, 2, color_border);
+    ui_draw_text(canvas, ui->bold, 25, OPT_MENU_X + 28, OPT_MENU_Y + 12,
+                 OPT_MENU_W - 56, UI_ALIGN_LEFT, color_dim,
+                 tr("options.language"));
+    for (int i = 0; i < count; ++i) {
+        int y = OPT_MENU_Y + OPT_HEADER_H + 8 + i * MENU_ITEM_H;
+        bool current = strcmp(ui->languages[i].code, i18n_current()) == 0;
+        if (hover == ID_OPTION_ITEM + i)
+            ui_fill_round_rect(canvas, OPT_MENU_X + 8, y, OPT_MENU_W - 16,
+                               MENU_ITEM_H, 14, color_tile_hover);
+        ui_draw_text(canvas, current ? ui->bold : ui->font, 25,
+                     OPT_MENU_X + 28, y + 11, OPT_MENU_W - 56, UI_ALIGN_LEFT,
+                     current ? color_accent : color_text,
+                     ui->languages[i].name);
+    }
 }
 
 static void draw_tile(struct browser_ui *ui, struct ui_canvas *canvas,
@@ -434,11 +514,12 @@ static void draw_tile(struct browser_ui *ui, struct ui_canvas *canvas,
                      0, UI_ALIGN_RIGHT, color_text, duration);
     }
     if (entry->played) {
-        int width = ui_text_width(ui->bold, 18, "Gesehen") + 18;
+        const char *seen = tr("badge.watched");
+        int width = ui_text_width(ui->bold, 18, seen) + 18;
         ui_fill_round_rect(canvas, x + TILE_W - 10 - width, y + 10, width, 28,
                            8, UI_RGBA(0, 0, 0, 170));
         ui_draw_text(canvas, ui->bold, 18, x + TILE_W - 19, y + 13, 0,
-                     UI_ALIGN_RIGHT, color_accent, "Gesehen");
+                     UI_ALIGN_RIGHT, color_accent, seen);
     }
     if (entry->resume_us > 0 && entry->duration_us > 0) {
         float share = (float)entry->resume_us / (float)entry->duration_us;
@@ -495,7 +576,7 @@ static const char *current_title(const struct browser_ui *ui)
 {
     const char *path = ui->listing.path;
     if (!path || !path[0])
-        return "Lade …";
+        return tr("status.loading");
     const char *last = path;
     for (const char *s = strstr(path, " / "); s; s = strstr(s + 3, " / "))
         last = s + 3;
@@ -551,7 +632,7 @@ static void draw_filter_chip(struct browser_ui *ui, struct ui_canvas *canvas,
     ui_draw_text(canvas, active ? ui->bold : ui->font, 24, FILTER_X + 24,
                  FILTER_Y + 8, FILTER_W - 72, UI_ALIGN_LEFT,
                  active ? color_accent : color_text,
-                 active ? "Gefiltert" : "Filter");
+                 active ? tr("filter.active") : tr("filter.chip"));
     ui_draw_icon(canvas, UI_ICON_CHEVRON_DOWN, FILTER_X + FILTER_W - 30,
                  FILTER_Y + FILTER_H / 2.0f, 26, color_dim);
 }
@@ -575,7 +656,7 @@ static void draw_filter_menu(struct browser_ui *ui, struct ui_canvas *canvas,
                                color_tile_hover);
         ui_draw_text(canvas, ui->font, 25, FILTER_MENU_X + 28, y + 11,
                      FILTER_MENU_W - 56, UI_ALIGN_LEFT,
-                     i == 3 ? color_accent : color_text, filter_labels[i]);
+                     i == 3 ? color_accent : color_text, tr(filter_labels[i]));
     }
 }
 
@@ -624,7 +705,7 @@ static void draw_pager(struct browser_ui *ui, struct ui_canvas *canvas,
                      enabled ? color_text : color_dim);
         ui_draw_text(canvas, ui->font, 26, CENTER_X + 58, PAGER_Y + 13, 0,
                      UI_ALIGN_LEFT, enabled ? color_text : color_dim,
-                     "Vorherige");
+                     tr("pager.previous"));
     }
     if (hover < 0 || hover == ID_NEXT) {
         bool enabled = ui->page + 1 < page_count(ui);
@@ -634,7 +715,7 @@ static void draw_pager(struct browser_ui *ui, struct ui_canvas *canvas,
                                                        : color_card);
         ui_draw_text(canvas, ui->font, 26, x + 136, PAGER_Y + 13, 0,
                      UI_ALIGN_RIGHT, enabled ? color_text : color_dim,
-                     "Nächste");
+                     tr("pager.next"));
         ui_draw_icon(canvas, UI_ICON_CHEVRON_RIGHT, x + 158,
                      PAGER_Y + PAGER_H / 2.0f, 30,
                      enabled ? color_text : color_dim);
@@ -672,7 +753,7 @@ static void draw_base(struct browser_ui *ui, struct ui_canvas *canvas)
     ui_draw_text(canvas, ui->bold, 42, 60, 52, 0, UI_ALIGN_LEFT, color_text,
                  "Stereonaut");
     ui_draw_text(canvas, ui->font, 24, 62, 108, 0, UI_ALIGN_LEFT, color_dim,
-                 "VR-Videoplayer");
+                 tr("app.subtitle"));
     draw_rail(ui, canvas, -1);
 
     draw_back_button(ui, canvas, false);
@@ -686,7 +767,7 @@ static void draw_base(struct browser_ui *ui, struct ui_canvas *canvas)
         draw_tile(ui, canvas, slot, false);
     if (!ui->grid_count && ui->listing.path)
         ui_draw_text(canvas, ui->font, 30, CENTER_X + CENTER_W / 2, 480, 0,
-                     UI_ALIGN_CENTER, color_dim, "Keine Einträge");
+                     UI_ALIGN_CENTER, color_dim, tr("status.empty"));
 
     const char *message = ui->listing.error[0] ? ui->listing.error
                                                : ui->status_message;
@@ -716,13 +797,12 @@ static void draw_detail(struct browser_ui *ui, struct ui_canvas *canvas)
 {
     const int x = DETAIL_X + 24, width = SIDE_W - 48;
     ui_draw_text(canvas, ui->font, 24, x, 48, 0, UI_ALIGN_LEFT, color_dim,
-                 "Details");
+                 tr("detail.title"));
     int index = ui->detail;
     if (index < 0 || (size_t)index >= ui->listing.entry_count) {
         ui_draw_text_wrapped(canvas, ui->font, 26, x, 110, width, 36, 4,
                              UI_ALIGN_LEFT, color_dim,
-                             "Zeige mit dem Controller auf einen Titel, um "
-                             "Details zu sehen.");
+                             tr("detail.hint"));
         return;
     }
     const struct file_browser_entry *entry = &ui->listing.entries[index];
@@ -772,23 +852,24 @@ static void draw_detail(struct browser_ui *ui, struct ui_canvas *canvas)
     struct {
         const char *label, *value;
     } rows[] = {
-        {"Typ", entry->kind == FILE_BROWSER_MEDIA ? "Video" : "Ordner"},
-        {"Dauer", format_duration(entry->duration_us, duration)},
-        {"Gestoppt", format_duration(entry->resume_us, resume)},
-        {"Gesehen", entry->played ? "Ja" : ""},
-        {"Jahr", year},
-        {"Quelle", jellyfin ? "Jellyfin" : "Lokal"},
-        {"Format", extension_badge(entry, badge)},
-        {"Codec", entry->codec},
-        {"Größe", size},
-        {"Datei", file_size},
-        {"Geändert", modified},
+        {"detail.type", entry->kind == FILE_BROWSER_MEDIA ? tr("value.video")
+                                                          : tr("value.folder")},
+        {"detail.duration", format_duration(entry->duration_us, duration)},
+        {"detail.stopped", format_duration(entry->resume_us, resume)},
+        {"detail.watched", entry->played ? tr("value.yes") : ""},
+        {"detail.year", year},
+        {"detail.source", jellyfin ? "Jellyfin" : tr("value.local")},
+        {"detail.format", extension_badge(entry, badge)},
+        {"detail.codec", entry->codec},
+        {"detail.size", size},
+        {"detail.file", file_size},
+        {"detail.modified", modified},
     };
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i) {
         if (!rows[i].value[0])
             continue;
         ui_draw_text(canvas, ui->font, 24, x, y, 0, UI_ALIGN_LEFT, color_dim,
-                     rows[i].label);
+                     tr(rows[i].label));
         ui_draw_text(canvas, ui->bold, 24, x + 120, y, width - 120,
                      UI_ALIGN_LEFT, color_text, rows[i].value);
         y += 40;
@@ -796,7 +877,7 @@ static void draw_detail(struct browser_ui *ui, struct ui_canvas *canvas)
     if (entry->kind == FILE_BROWSER_MEDIA)
         ui_draw_text_wrapped(canvas, ui->font, 24, x, CARD_Y + CARD_H - 80,
                              width, 32, 2, UI_ALIGN_LEFT, color_dim,
-                             "Trigger drücken zum Abspielen");
+                             tr("detail.play_hint"));
 }
 
 static void draw_keyboard(struct browser_ui *ui, struct ui_canvas *canvas,
@@ -810,36 +891,72 @@ static void draw_keyboard(struct browser_ui *ui, struct ui_canvas *canvas,
                        UI_RGBA(30, 32, 39, 255));
     ui_stroke_round_rect(canvas, KB_X, KB_Y, KB_W, KB_H, 26, 2,
                          color_border);
-    /* Text field with the query (or a placeholder) and a caret. */
+    /* Title + the active field value (masked for passwords) with a caret. */
+    bool search = ui->kb_purpose == KB_PURPOSE_SEARCH;
+    const char *value = ui->kb_target ? ui->kb_target : "";
+    char masked[64];
+    if (ui->kb_mask) {
+        size_t n = strlen(value);
+        if (n >= sizeof(masked))
+            n = sizeof(masked) - 1;
+        memset(masked, '*', n);
+        masked[n] = '\0';
+        value = masked;
+    }
     ui_fill_round_rect(canvas, KB_X + 26, KB_Y + 24, KB_W - 52, 72, 20,
                        color_tile);
-    ui_draw_icon(canvas, UI_ICON_SEARCH, KB_X + 66, KB_Y + 60, 34,
-                 color_dim);
-    char shown[80];
-    snprintf(shown, sizeof(shown), "%s|", ui->query);
-    ui_draw_text(canvas, ui->font, 32, KB_X + 100, KB_Y + 40, KB_W - 160,
-                 UI_ALIGN_LEFT, ui->query[0] ? color_text : color_dim,
-                 ui->query[0] ? shown : "Titel in Jellyfin suchen …");
-    for (int id = ID_KEY; id <= ID_KEY_SEARCH; ++id) {
+    if (search) {
+        ui_draw_icon(canvas, UI_ICON_SEARCH, KB_X + 66, KB_Y + 60, 34,
+                     color_dim);
+        char shown[96];
+        snprintf(shown, sizeof(shown), "%s|", value);
+        ui_draw_text(canvas, ui->font, 32, KB_X + 100, KB_Y + 40, KB_W - 160,
+                     UI_ALIGN_LEFT, value[0] ? color_text : color_dim,
+                     value[0] ? shown : tr("search.placeholder"));
+    } else {
+        ui_draw_text(canvas, ui->bold, 26, KB_X + 40, KB_Y + 36, KB_W - 320,
+                     UI_ALIGN_LEFT, color_dim, ui->kb_title);
+        char shown[600];
+        snprintf(shown, sizeof(shown), "%s|", value);
+        ui_draw_text(canvas, ui->font, 30, KB_X + 320, KB_Y + 38,
+                     KB_W - 360, UI_ALIGN_LEFT, color_text, shown);
+    }
+    for (int id = ID_KEY; id <= ID_KEY_ENTER; ++id) {
         int x, y, width;
         if (!key_rect(id, &x, &y, &width))
             continue;
         bool focused = hover == id;
-        bool primary = id == ID_KEY_SEARCH;
+        bool primary = id == ID_KEY_ENTER;
+        bool toggled = (id == ID_KEY_SHIFT && ui->kb_shift) ||
+                       (id == ID_KEY_SYMBOLS && ui->kb_symbols);
         ui_fill_round_rect(canvas, x, y, width, KEY_H, 14,
                            primary ? (focused ? UI_RGBA(90, 180, 255, 255)
                                               : color_accent)
-                           : focused ? color_tile_hover
-                                     : color_chip);
-        const char *label =
-            id < ID_KEY_SPACE
-                ? keyboard_keys[(id - ID_KEY) / KEY_COLUMNS]
-                               [(id - ID_KEY) % KEY_COLUMNS]
-            : id == ID_KEY_SPACE     ? "Leerzeichen"
-            : id == ID_KEY_BACKSPACE ? "Löschen"
-            : id == ID_KEY_CANCEL    ? "Abbrechen"
-                                     : "Suchen";
-        ui_draw_text(canvas, id < ID_KEY_SPACE ? ui->bold : ui->font, 28,
+                           : toggled  ? color_accent_soft
+                           : focused  ? color_tile_hover
+                                      : color_chip);
+        char glyph[8];
+        const char *label;
+        if (id < ID_KEY_SHIFT) {
+            key_label(ui, id, glyph, sizeof(glyph));
+            label = glyph;
+        } else if (id == ID_KEY_SHIFT) {
+            label = tr("key.shift");
+        } else if (id == ID_KEY_SYMBOLS) {
+            label = ui->kb_symbols ? tr("key.letters") : tr("key.symbols");
+        } else if (id == ID_KEY_SPACE) {
+            label = tr("key.space");
+        } else if (id == ID_KEY_BACKSPACE) {
+            label = tr("key.backspace");
+        } else if (id == ID_KEY_CANCEL) {
+            label = tr("key.cancel");
+        } else {
+            label = search ? tr("key.search")
+                   : ui->kb_purpose == KB_PURPOSE_WEBDAV_PASS
+                         ? tr("key.save")
+                         : tr("key.next");
+        }
+        ui_draw_text(canvas, id < ID_KEY_SHIFT ? ui->bold : ui->font, 28,
                      x + width / 2, y + 14, width - 12, UI_ALIGN_CENTER,
                      color_text, label);
     }
@@ -865,15 +982,15 @@ static void draw_resume_prompt(struct browser_ui *ui,
     format_duration(entry->resume_us, position);
     ui_draw_text(canvas, ui->font, 26, PROMPT_X + PROMPT_W / 2,
                  PROMPT_Y + 96, PROMPT_W - 64, UI_ALIGN_CENTER, color_dim,
-                 "Zuletzt gestoppt – wo weiterschauen?");
-    snprintf(text, sizeof(text), "Ab %s", position);
+                 tr("resume.question"));
+    snprintf(text, sizeof(text), tr("resume.at"), position);
     const struct {
         int id, x;
         const char *label;
         bool primary;
     } buttons[] = {
         {ID_RESUME, PROMPT_RESUME_X, text, true},
-        {ID_RESTART, PROMPT_RESTART_X, "Von vorn", false},
+        {ID_RESTART, PROMPT_RESTART_X, tr("resume.restart"), false},
     };
     for (size_t i = 0; i < 2; ++i) {
         bool focused = hover == buttons[i].id;
@@ -944,6 +1061,8 @@ void browser_ui_render(struct browser_ui *ui, uint32_t *pixels, bool bgra)
         draw_sort_menu(ui, &canvas, hover);
     if (ui->filter_menu_open)
         draw_filter_menu(ui, &canvas, hover);
+    if (ui->options_open)
+        draw_options_menu(ui, &canvas, hover);
     if (ui->resume_prompt >= 0 &&
         (size_t)ui->resume_prompt < ui->listing.entry_count)
         draw_resume_prompt(ui, &canvas, hover);
@@ -979,6 +1098,10 @@ static int hit_test(int x, int y, int layers)
     if ((layers & HIT_MENU) && x >= MENU_X && x < MENU_X + MENU_W &&
         y >= MENU_Y && y < MENU_Y + MENU_H)
         return ID_SORT_AREA;
+    if ((layers & HIT_OPTIONS) && x >= OPT_MENU_X &&
+        x < OPT_MENU_X + OPT_MENU_W && y >= OPT_MENU_Y &&
+        y < OPT_MENU_Y + OPT_MENU_H)
+        return ID_OPTION_AREA;
     for (int slot = 0; slot < (int)PAGE_ENTRIES; ++slot) {
         int tx, ty;
         tile_rect(slot, &tx, &ty);
@@ -1009,7 +1132,8 @@ static int hit_test(int x, int y, int layers)
 int browser_ui_hit_test(float u, float v)
 {
     return hit_test((int)(u * BROWSER_UI_WIDTH), (int)(v * BROWSER_UI_HEIGHT),
-                    HIT_MENU | HIT_PROMPT | HIT_FILTER | HIT_KEYBOARD);
+                    HIT_MENU | HIT_PROMPT | HIT_FILTER | HIT_KEYBOARD |
+                        HIT_OPTIONS);
 }
 
 /* Page buttons depend on the page count, which the stateless hit test does
@@ -1035,7 +1159,7 @@ void browser_ui_set_pointer(struct browser_ui *ui, bool visible, int x, int y,
     if (ui->keyboard_open) {
         /* Modal: keys only; a click elsewhere closes the keyboard. */
         int key = -1;
-        for (int id = ID_KEY; hover == ID_KEYBOARD_AREA && id <= ID_KEY_SEARCH;
+        for (int id = ID_KEY; hover == ID_KEYBOARD_AREA && id <= ID_KEY_ENTER;
              ++id) {
             int kx, ky, width;
             if (key_rect(id, &kx, &ky, &width) && x >= kx &&
@@ -1079,6 +1203,18 @@ void browser_ui_set_pointer(struct browser_ui *ui, bool visible, int x, int y,
     }
     if (hover == ID_PROMPT_AREA)
         hover = hit_test(x, y, HIT_MENU | HIT_FILTER);
+    if (hover == ID_OPTION_AREA) {
+        if (ui->options_open) {
+            int row = (y - OPT_MENU_Y - OPT_HEADER_H - 8) / MENU_ITEM_H;
+            hover = row >= 0 && row < ui->language_count
+                        ? ID_OPTION_ITEM + row
+                        : -1;
+        } else {
+            hover = hit_test(x, y, 0);
+        }
+    } else if (ui->options_open && hover != ID_RAIL + RAIL_OPTIONS) {
+        hover = -1; /* clicks outside the overlay only close it */
+    }
     if (hover == ID_FILTER_AREA) {
         if (ui->filter_menu_open) {
             int row = (y - FILTER_MENU_Y - 8) / MENU_ITEM_H;
@@ -1268,50 +1404,148 @@ static void set_page(struct browser_ui *ui, size_t page)
 void browser_ui_close_menus(struct browser_ui *ui)
 {
     if (ui->sort_menu_open || ui->filter_menu_open ||
-        ui->resume_prompt >= 0 || ui->keyboard_open) {
+        ui->resume_prompt >= 0 || ui->keyboard_open || ui->options_open) {
         ui->sort_menu_open = false;
         ui->filter_menu_open = false;
         ui->keyboard_open = false;
+        ui->kb_purpose = KB_PURPOSE_NONE;
+        ui->kb_target = NULL;
+        ui->options_open = false;
         ui->resume_prompt = -1;
         ui->dirty = true;
     }
 }
 
-/* A key of the search keyboard (or a click outside it, which closes it). */
-static void type_key(struct browser_ui *ui, int hover)
+/* ---- On-screen keyboard tool ---------------------------------------
+ * keyboard_begin points the keyboard at any buffer; the keys edit it in
+ * place and ID_KEY_ENTER routes to keyboard_commit, which acts on
+ * kb_purpose (run a search, or walk the WebDAV add-server fields). */
+static void keyboard_begin(struct browser_ui *ui, int purpose,
+                           const char *title, char *target, size_t capacity,
+                           bool mask)
 {
-    size_t length = strlen(ui->query);
+    ui->keyboard_open = true;
+    ui->kb_purpose = purpose;
+    ui->kb_target = target;
+    ui->kb_capacity = capacity;
+    ui->kb_mask = mask;
+    ui->kb_shift = false;
+    ui->kb_symbols = false;
+    snprintf(ui->kb_title, sizeof(ui->kb_title), "%s", title);
+    ui->sort_menu_open = ui->filter_menu_open = ui->options_open = false;
+    ui->hover = -1;
     ui->dirty = true;
-    if (hover >= ID_KEY && hover < ID_KEY + KEY_ROWS * KEY_COLUMNS) {
-        const char *key = keyboard_keys[(hover - ID_KEY) / KEY_COLUMNS]
-                                       [(hover - ID_KEY) % KEY_COLUMNS];
-        if (length + strlen(key) < sizeof(ui->query))
-            memcpy(ui->query + length, key, strlen(key) + 1);
-    } else if (hover == ID_KEY_SPACE) {
-        if (length && ui->query[length - 1] != ' ' &&
-            length + 1 < sizeof(ui->query))
-            memcpy(ui->query + length, " ", 2);
-    } else if (hover == ID_KEY_BACKSPACE) {
-        /* Drop one UTF-8 character (continuation bytes are 10xxxxxx). */
-        while (length && (ui->query[length - 1] & 0xC0) == 0x80)
-            --length;
-        if (length)
-            --length;
-        ui->query[length] = '\0';
-    } else if (hover == ID_KEY_SEARCH) {
+}
+
+static void keyboard_dismiss(struct browser_ui *ui)
+{
+    ui->keyboard_open = false;
+    ui->kb_purpose = KB_PURPOSE_NONE;
+    ui->kb_target = NULL;
+    ui->hover = -1;
+    ui->dirty = true;
+}
+
+static void open_webdav_form(struct browser_ui *ui)
+{
+    ui->webdav_url[0] = ui->webdav_user[0] = ui->webdav_pass[0] = '\0';
+    ui->status_message[0] = '\0';
+    keyboard_begin(ui, KB_PURPOSE_WEBDAV_URL, "Server URL", ui->webdav_url,
+                   sizeof(ui->webdav_url), false);
+}
+
+static void keyboard_commit(struct browser_ui *ui)
+{
+    switch (ui->kb_purpose) {
+    case KB_PURPOSE_SEARCH: {
+        size_t length = strlen(ui->query);
         while (length && ui->query[length - 1] == ' ')
             ui->query[--length] = '\0';
         if (!length)
             return;
         char location[96];
         snprintf(location, sizeof(location), "jf:search:%s", ui->query);
-        ui->keyboard_open = false;
-        ui->hover = -1;
+        keyboard_dismiss(ui);
         ui->restore_page = 0;
         request(ui, location);
+        return;
+    }
+    case KB_PURPOSE_WEBDAV_URL:
+        if (!ui->webdav_url[0])
+            return; /* a server needs an address */
+        keyboard_begin(ui, KB_PURPOSE_WEBDAV_USER, "Username",
+                       ui->webdav_user, sizeof(ui->webdav_user), false);
+        return;
+    case KB_PURPOSE_WEBDAV_USER:
+        keyboard_begin(ui, KB_PURPOSE_WEBDAV_PASS, "Password",
+                       ui->webdav_pass, sizeof(ui->webdav_pass), true);
+        return;
+    case KB_PURPOSE_WEBDAV_PASS: {
+        struct wd_server server;
+        memset(&server, 0, sizeof(server));
+        snprintf(server.url, sizeof(server.url), "%s", ui->webdav_url);
+        snprintf(server.user, sizeof(server.user), "%s", ui->webdav_user);
+        snprintf(server.pass, sizeof(server.pass), "%s", ui->webdav_pass);
+        char error[128] = "";
+        if (wd_server_add(&server, error, sizeof(error)) < 0) {
+            snprintf(ui->status_message, sizeof(ui->status_message), "%s",
+                     error);
+            keyboard_begin(ui, KB_PURPOSE_WEBDAV_URL, "Server URL",
+                           ui->webdav_url, sizeof(ui->webdav_url), false);
+            return;
+        }
+        keyboard_dismiss(ui);
+        request(ui, "webdav:");
+        return;
+    }
+    default:
+        keyboard_dismiss(ui);
+        return;
+    }
+}
+
+/* A key press (or a click outside, which cancels). */
+static void type_key(struct browser_ui *ui, int hover)
+{
+    ui->dirty = true;
+    if (hover == ID_KEY_SHIFT) {
+        ui->kb_shift = !ui->kb_shift;
+        return;
+    }
+    if (hover == ID_KEY_SYMBOLS) {
+        ui->kb_symbols = !ui->kb_symbols;
+        return;
+    }
+    if (hover == ID_KEY_ENTER) {
+        keyboard_commit(ui);
+        return;
+    }
+    if (hover == ID_KEY_CANCEL) {
+        keyboard_dismiss(ui);
+        return;
+    }
+    char *buf = ui->kb_target;
+    if (!buf)
+        return;
+    size_t capacity = ui->kb_capacity;
+    size_t length = strlen(buf);
+    if (hover >= ID_KEY && hover < ID_KEY + KEY_ROWS * KEY_COLUMNS) {
+        char glyph[8];
+        key_label(ui, hover, glyph, sizeof(glyph));
+        if (length + strlen(glyph) < capacity)
+            memcpy(buf + length, glyph, strlen(glyph) + 1);
+    } else if (hover == ID_KEY_SPACE) {
+        if (length && buf[length - 1] != ' ' && length + 1 < capacity)
+            memcpy(buf + length, " ", 2);
+    } else if (hover == ID_KEY_BACKSPACE) {
+        /* Drop one UTF-8 character (continuation bytes are 10xxxxxx). */
+        while (length && (buf[length - 1] & 0xC0) == 0x80)
+            --length;
+        if (length)
+            --length;
+        buf[length] = '\0';
     } else if (hover != ID_KEYBOARD_AREA) {
-        ui->keyboard_open = false; /* "Abbrechen" or a click outside */
-        ui->hover = -1;
+        keyboard_dismiss(ui); /* a click outside the keyboard */
     }
 }
 
@@ -1404,6 +1638,26 @@ enum browser_ui_action browser_ui_activate(struct browser_ui *ui, char *path,
         ui->dirty = true;
         return BROWSER_UI_NONE;
     }
+    if (ui->options_open) {
+        if (hover >= ID_OPTION_ITEM &&
+            hover < ID_OPTION_ITEM + ui->language_count) {
+            const char *code = ui->languages[hover - ID_OPTION_ITEM].code;
+            settings_set_string("language", code);
+            i18n_load(code);
+        }
+        ui->options_open = false;
+        ui->hover = -1;
+        ui->content_dirty = true; /* every cached label must be redrawn */
+        ui->dirty = true;
+        return BROWSER_UI_NONE;
+    }
+    if (hover == ID_RAIL + RAIL_OPTIONS) {
+        ui->options_open = true;
+        ui->sort_menu_open = ui->filter_menu_open = false;
+        ui->language_count = i18n_list(ui->languages, I18N_MAX_LANGUAGES);
+        ui->dirty = true;
+        return BROWSER_UI_NONE;
+    }
     if (hover >= ID_TILE && hover < ID_TILE + (int)PAGE_ENTRIES) {
         int index = slot_entry(ui, hover);
         if (index < 0)
@@ -1418,7 +1672,10 @@ enum browser_ui_action browser_ui_activate(struct browser_ui *ui, char *path,
             }
             return select_title(ui, index, 0, path, path_size);
         }
-        request(ui, entry->path);
+        if (strcmp(entry->path, "webdav:add") == 0)
+            open_webdav_form(ui);
+        else
+            request(ui, entry->path);
     } else if (hover == ID_BACK && ui->parent >= 0) {
         request(ui, ui->listing.entries[ui->parent].path);
     } else if (hover == ID_PREVIOUS) {
@@ -1435,11 +1692,11 @@ enum browser_ui_action browser_ui_activate(struct browser_ui *ui, char *path,
         request(ui, "root:");
     } else if (hover == ID_RAIL + RAIL_JELLYFIN) {
         request(ui, "jf:");
+    } else if (hover == ID_RAIL + RAIL_WEBDAV) {
+        request(ui, "webdav:");
     } else if (hover == ID_RAIL + RAIL_SEARCH) {
-        ui->keyboard_open = true;
-        ui->sort_menu_open = ui->filter_menu_open = false;
-        ui->hover = -1;
-        ui->dirty = true;
+        keyboard_begin(ui, KB_PURPOSE_SEARCH, tr("rail.search"), ui->query,
+                       sizeof(ui->query), false);
     } else if (hover == ID_RAIL + RAIL_LOCAL) {
         const char *home = getenv("HOME");
         request(ui, home && home[0] ? home : "/");

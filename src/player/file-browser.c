@@ -1,6 +1,7 @@
 #define _XOPEN_SOURCE 700
 #include "file-browser.h"
 #include "jellyfin.h"
+#include "webdav.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -152,16 +153,16 @@ static struct file_browser_listing read_directory(const char *requested,
     char *resolved = realpath(requested, NULL);
     if (!resolved) {
         snprintf(listing.error, sizeof(listing.error),
-                 "Verzeichnis kann nicht geöffnet werden: %s", strerror(errno));
+                 "Cannot open directory: %s", strerror(errno));
         listing.path = strdup(requested);
         return listing;
     }
-    /* Display title "Lokale Dateien / home / user / Videos". */
+    /* Display title "Local files / home / user / Videos". */
     size_t title_size = strlen(resolved) * 2U + 32U;
     listing.path = malloc(title_size);
     if (listing.path) {
         size_t used = (size_t)snprintf(listing.path, title_size,
-                                       "Lokale Dateien");
+                                       "Local files");
         for (const char *c = resolved; *c && used + 4U < title_size; ++c) {
             if (*c == '/') {
                 if (c[1]) {
@@ -177,7 +178,7 @@ static struct file_browser_listing read_directory(const char *requested,
     DIR *directory = opendir(resolved);
     if (!directory) {
         snprintf(listing.error, sizeof(listing.error),
-                 "Verzeichnis kann nicht geöffnet werden: %s", strerror(errno));
+                 "Cannot open directory: %s", strerror(errno));
         free(resolved);
         return listing;
     }
@@ -194,7 +195,7 @@ static struct file_browser_listing read_directory(const char *requested,
         if (!item) {
             if (errno)
                 snprintf(listing.error, sizeof(listing.error),
-                         "Verzeichnis konnte nicht vollständig gelesen werden: %s",
+                         "Directory could not be fully read: %s",
                          strerror(errno));
             break;
         }
@@ -247,7 +248,7 @@ allocation_failure:
     listing.generation = generation;
     listing.path = strdup(requested);
     snprintf(listing.error, sizeof(listing.error),
-             "Nicht genug Speicher für Verzeichnisliste");
+             "Out of memory for directory listing");
     return listing;
 }
 
@@ -310,12 +311,13 @@ static struct file_browser_listing read_root(uint64_t generation)
     struct file_browser_listing listing = {.generation = generation};
     listing.path = strdup("Start");
     const char *home = getenv("HOME");
-    if (add_entry(&listing, FILE_BROWSER_DIRECTORY, "Lokale Dateien",
+    if (add_entry(&listing, FILE_BROWSER_DIRECTORY, "Local files",
                   home && home[0] ? home : "/") < 0 ||
-        add_entry(&listing, FILE_BROWSER_DIRECTORY, "Jellyfin", "jf:") < 0) {
+        add_entry(&listing, FILE_BROWSER_DIRECTORY, "Jellyfin", "jf:") < 0 ||
+        add_entry(&listing, FILE_BROWSER_DIRECTORY, "WebDAV", "webdav:") < 0) {
         file_browser_listing_clear(&listing);
         listing.generation = generation;
-        snprintf(listing.error, sizeof(listing.error), "Nicht genug Speicher");
+        snprintf(listing.error, sizeof(listing.error), "Out of memory");
         return listing;
     }
     struct jf_config config;
@@ -352,24 +354,24 @@ static struct file_browser_listing jellyfin_login(
             return (struct file_browser_listing){.generation = generation};
         }
         if (!error[0])
-            note = "Noch nicht bestätigt";
+            note = "Not yet confirmed";
         else
             login_secret[0] = '\0'; /* expired or rejected: request a new code */
     }
     if (!login_secret[0] &&
         jf_quickconnect_start(config, login_code, login_secret, error,
                               sizeof(error)) < 0)
-        return jellyfin_message(generation, "Jellyfin anmelden",
-                                error[0] ? error : "Anmeldung nicht möglich");
+        return jellyfin_message(generation, "Sign in to Jellyfin",
+                                error[0] ? error : "Login failed");
     struct file_browser_listing listing = {.generation = generation};
-    listing.path = strdup("Jellyfin anmelden");
+    listing.path = strdup("Sign in to Jellyfin");
     snprintf(listing.error, sizeof(listing.error), "%s",
-             note ? note : "Code in Jellyfin unter Quick Connect bestätigen");
+             note ? note : "Confirm the code in Jellyfin under Quick Connect");
     char label[64];
     add_entry(&listing, FILE_BROWSER_PARENT, "..", "root:");
     snprintf(label, sizeof(label), "Code %s", login_code);
     add_entry(&listing, FILE_BROWSER_DIRECTORY, label, "jf:login");
-    add_entry(&listing, FILE_BROWSER_DIRECTORY, "Weiter nach Bestätigung",
+    add_entry(&listing, FILE_BROWSER_DIRECTORY, "Continue after confirmation",
               "jf:login");
     return listing;
 }
@@ -378,10 +380,10 @@ static const char *const filter_keys[JF_FILTER_COUNT] = {
     "", "genre", "studio", "person",
 };
 static const char *const filter_names[JF_FILTER_COUNT] = {
-    "", "Genre", "Studio", "Darsteller",
+    "", "Genre", "Studio", "Cast",
 };
 static const char *const filter_titles[JF_FILTER_COUNT] = {
-    "", "Genres", "Studios", "Darsteller",
+    "", "Genres", "Studios", "Cast",
 };
 
 /* "genre=ID" (id copied when `id` is given) or "genre" alone. */
@@ -461,7 +463,7 @@ static int list_views_cached(const struct jf_config *config,
     *items = malloc((views_cache_count ? views_cache_count : 1U) *
                     sizeof(**items));
     if (!*items) {
-        set_error(error, error_size, "Nicht genug Speicher");
+        set_error(error, error_size, "Out of memory");
         return -1;
     }
     memcpy(*items, views_cache, views_cache_count * sizeof(**items));
@@ -585,11 +587,11 @@ static struct file_browser_listing read_jellyfin(const char *request,
         config.token[0] = '\0';
         login_secret[0] = '\0';
         return jellyfin_login(generation, &config, false,
-                              "Anmeldung abgelaufen: neuen Code bestätigen");
+                              "Login expired: confirm a new code");
     }
     if (result < 0)
         return jellyfin_message(generation, "Jellyfin",
-                                error[0] ? error : "Jellyfin-Fehler");
+                                error[0] ? error : "Jellyfin error");
     listing.path = strdup(title);
     if (add_entry(&listing, FILE_BROWSER_PARENT, "..", parent_path_text) < 0)
         goto allocation_failure;
@@ -613,7 +615,7 @@ static struct file_browser_listing read_jellyfin(const char *request,
             goto allocation_failure;
         if (query && count == 0)
             snprintf(listing.error, sizeof(listing.error),
-                     "Keine Treffer für „%.120s“", query);
+                     "No matches for “%.120s”", query);
     }
     free(items);
     return listing;
@@ -623,7 +625,92 @@ allocation_failure:
     file_browser_listing_clear(&listing);
     listing.generation = generation;
     listing.path = strdup("Jellyfin");
-    snprintf(listing.error, sizeof(listing.error), "Nicht genug Speicher");
+    snprintf(listing.error, sizeof(listing.error), "Out of memory");
+    return listing;
+}
+
+/* "webdav:" lists the saved servers; "webdav:srv:<idx>:<dir>" PROPFINDs a
+ * directory. Media become "webdav:play:<idx>:<path>" specs the session
+ * resolves; the add-server form is a special "webdav:add" entry the UI
+ * intercepts before it ever reaches here. */
+static struct file_browser_listing read_webdav(const char *path,
+                                               uint64_t generation)
+{
+    struct file_browser_listing listing = {.generation = generation};
+
+    if (strcmp(path, "webdav:") == 0) {
+        listing.path = strdup("WebDAV");
+        add_entry(&listing, FILE_BROWSER_PARENT, "..", "root:");
+        struct wd_server servers[WD_MAX_SERVERS];
+        int count = wd_servers_load(servers, WD_MAX_SERVERS);
+        for (int i = 0; i < count; ++i) {
+            char base[640], spec[768];
+            wd_base_path(&servers[i], base, sizeof(base));
+            snprintf(spec, sizeof(spec), "webdav:srv:%d:%s", i, base);
+            add_entry(&listing, FILE_BROWSER_DIRECTORY, servers[i].name, spec);
+        }
+        add_entry(&listing, FILE_BROWSER_DIRECTORY, "+ Add server",
+                  "webdav:add");
+        return listing;
+    }
+
+    /* "webdav:srv:<idx>:<dir>" */
+    const char *rest = path + 11; /* strlen("webdav:srv:") */
+    int index = atoi(rest);
+    const char *colon = strchr(rest, ':');
+    const char *dir = colon ? colon + 1 : "/";
+    struct wd_server server;
+    if (wd_server_get(index, &server) < 0) {
+        listing.path = strdup("WebDAV");
+        add_entry(&listing, FILE_BROWSER_PARENT, "..", "webdav:");
+        snprintf(listing.error, sizeof(listing.error), "No such server");
+        return listing;
+    }
+    listing.path = strdup(server.name);
+
+    /* Parent: one directory up, or the server list at the base. */
+    char base[640];
+    wd_base_path(&server, base, sizeof(base));
+    char parent[768];
+    if (strcmp(dir, base) == 0) {
+        snprintf(parent, sizeof(parent), "webdav:");
+    } else {
+        char up[640];
+        snprintf(up, sizeof(up), "%s", dir);
+        size_t len = strlen(up);
+        while (len > 1 && up[len - 1] == '/')
+            up[--len] = '\0';
+        char *slash = strrchr(up, '/');
+        if (slash)
+            slash[1] = '\0';
+        snprintf(parent, sizeof(parent), "webdav:srv:%d:%s", index, up);
+    }
+    add_entry(&listing, FILE_BROWSER_PARENT, "..", parent);
+
+    struct wd_entry *entries = NULL;
+    size_t count = 0;
+    char error[256] = "";
+    if (wd_list(&server, dir, &entries, &count, error, sizeof(error)) < 0) {
+        snprintf(listing.error, sizeof(listing.error), "%s", error);
+        return listing;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        char spec[1200];
+        snprintf(spec, sizeof(spec), "webdav:%s:%d:%s",
+                 entries[i].is_dir ? "srv" : "play", index, entries[i].path);
+        if (add_entry(&listing,
+                      entries[i].is_dir ? FILE_BROWSER_DIRECTORY
+                                        : FILE_BROWSER_MEDIA,
+                      entries[i].name, spec) == 0 &&
+            !entries[i].is_dir) {
+            /* Tile picture: a key frame streamed from the server. */
+            char source[1200];
+            snprintf(source, sizeof(source), "webdav:%d:%s", index,
+                     entries[i].path);
+            listing.entries[listing.entry_count - 1U].image = strdup(source);
+        }
+    }
+    free(entries);
     return listing;
 }
 
@@ -636,6 +723,8 @@ static struct file_browser_listing read_location(
     if (strncmp(path, "jf:", 3) == 0)
         return read_jellyfin(path, generation, (enum jf_sort)sort,
                              descending);
+    if (strncmp(path, "webdav:", 7) == 0)
+        return read_webdav(path, generation);
     return read_directory(path, generation, local_sort, local_descending);
 }
 
@@ -824,12 +913,12 @@ int file_browser_request(struct file_browser *browser, const char *path,
                          char *error, size_t error_size)
 {
     if (!browser || !path || !path[0]) {
-        set_error(error, error_size, "ungültiger Verzeichnispfad");
+        set_error(error, error_size, "invalid directory path");
         return -1;
     }
     char *copy = strdup(path);
     if (!copy) {
-        set_error(error, error_size, "Verzeichnispfad konnte nicht kopiert werden");
+        set_error(error, error_size, "could not copy directory path");
         return -1;
     }
     pthread_mutex_lock(&browser->mutex);
@@ -845,28 +934,28 @@ int file_browser_open(struct file_browser **result, const char *initial_path,
                       char *error, size_t error_size)
 {
     if (!result) {
-        set_error(error, error_size, "ungültiger Browser-Zeiger");
+        set_error(error, error_size, "invalid browser pointer");
         return -1;
     }
     *result = NULL;
     struct file_browser *browser = calloc(1, sizeof(*browser));
     if (!browser) {
-        set_error(error, error_size, "Browser konnte nicht angelegt werden");
+        set_error(error, error_size, "could not create browser");
         return -1;
     }
     if (pthread_mutex_init(&browser->mutex, NULL) != 0) {
-        set_error(error, error_size, "Browser-Synchronisierung fehlgeschlagen");
+        set_error(error, error_size, "browser synchronization failed");
         free(browser);
         return -1;
     }
     if (pthread_cond_init(&browser->changed, NULL) != 0) {
-        set_error(error, error_size, "Browser-Synchronisierung fehlgeschlagen");
+        set_error(error, error_size, "browser synchronization failed");
         pthread_mutex_destroy(&browser->mutex);
         free(browser);
         return -1;
     }
     if (pthread_create(&browser->worker, NULL, browser_worker, browser) != 0) {
-        set_error(error, error_size, "Browser-Thread konnte nicht starten");
+        set_error(error, error_size, "could not start browser thread");
         pthread_cond_destroy(&browser->changed);
         pthread_mutex_destroy(&browser->mutex);
         free(browser);

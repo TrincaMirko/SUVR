@@ -4,6 +4,7 @@
 #include "jellyfin.h"
 #include "local-thumbnail.h"
 #include "ui-draw.h"
+#include "webdav.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -324,11 +325,58 @@ static struct ui_image *load_local(const char *path)
     return decoded ? prepare(decoded) : NULL;
 }
 
+/* "webdav:<idx>:<path>": a key frame of a remote video, streamed over
+ * http(s) with Basic auth and cached by a hash of the source. The path may
+ * change contents without the name changing, so the cache is best-effort. */
+static struct ui_image *load_webdav(const char *source)
+{
+    int index = atoi(source);
+    const char *path = strchr(source, ':');
+    if (!path)
+        return NULL;
+    ++path;
+    struct wd_server server;
+    if (wd_server_get(index, &server) < 0)
+        return NULL;
+    char origin[640], auth[512], headers[520], url[1200];
+    wd_origin(&server, origin, sizeof(origin));
+    wd_authorization_header(&server, auth, sizeof(auth));
+    snprintf(headers, sizeof(headers), "%s%s", auth, auth[0] ? "\r\n" : "");
+    snprintf(url, sizeof(url), "%s%s", origin, path);
+
+    uint64_t hash = 1469598103934665603ULL; /* FNV-1a of the full URL */
+    for (const unsigned char *c = (const unsigned char *)url; *c; ++c)
+        hash = (hash ^ *c) * 1099511628211ULL;
+    char item[32], cache[PATH_MAX];
+    snprintf(item, sizeof(item), "webdav%016llx", (unsigned long long)hash);
+    bool cacheable = cache_path(item, "Remote?tag=0", cache, sizeof(cache));
+    size_t size = 0;
+    char *data = cacheable ? read_file(cache, &size) : NULL;
+    if (!data) {
+        if (local_thumbnail_url_jpeg(url, headers, DOWNLOAD_WIDTH, &data,
+                                     &size) < 0) {
+            printf("webdav_thumbnail url=%s available=0\n", url);
+            return NULL;
+        }
+        if (cacheable)
+            write_file(cache, data, size);
+    }
+    struct ui_image *decoded = thumbnail_decode_jpeg(data, size);
+    free(data);
+    if (!decoded)
+        return NULL;
+    bool small = false;
+    decoded = trim_border(decoded, &small);
+    return decoded ? prepare(decoded) : NULL;
+}
+
 static struct ui_image *load(const struct jf_config *config,
                              const char *source, bool *stale)
 {
     if (strncmp(source, "file:", 5) == 0)
         return load_local(source + 5);
+    if (strncmp(source, "webdav:", 7) == 0)
+        return load_webdav(source + 7);
     const char *separator = strchr(source, '|');
     if (!separator)
         return NULL;

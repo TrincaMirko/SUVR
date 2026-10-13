@@ -40,6 +40,7 @@
 #include "format-detect.h"
 #include "settings.h"
 #include "decoded-video.h"
+#include "webdav.h"
 
 #define MAX_OUTPUT_BUFFERS 16U
 #define MAX_CAPTURE_BUFFERS 32U
@@ -259,6 +260,33 @@ static int resolve_jellyfin_input(const char *spec, bool resumed, char *url,
     atexit(jellyfin_cleanup);
     printf("jellyfin_playback mode=%s\n",
            jellyfin_playback.transcoding ? "hls-transcode" : "direct-play");
+    return 0;
+}
+
+/* "webdav:play:<idx>:<path>" names a file on a saved WebDAV server. Build
+ * its URL and, if the server needs auth, hand Basic credentials to
+ * libavformat through the environment (never through argv). */
+static int resolve_webdav_input(const char *spec, char *url, size_t size)
+{
+    const char *rest = spec + strlen("webdav:play:");
+    int index = atoi(rest);
+    const char *colon = strchr(rest, ':');
+    if (!colon || !colon[1]) {
+        fprintf(stderr, "invalid WebDAV item: %s\n", spec);
+        return -1;
+    }
+    struct wd_server server;
+    if (wd_server_get(index, &server) < 0) {
+        fprintf(stderr, "WebDAV: no such server (%d)\n", index);
+        return -1;
+    }
+    char header[512];
+    wd_authorization_header(&server, header, sizeof(header));
+    if (header[0])
+        setenv("STEREONAUT_HTTP_HEADERS", header, 1);
+    char origin[512];
+    wd_origin(&server, origin, sizeof(origin));
+    snprintf(url, size, "%s%s", origin, colon + 1);
     return 0;
 }
 
@@ -2760,6 +2788,12 @@ int main(int argc, char **argv)
                 format_name_guess.stereo == FORMAT_UNKNOWN)
                 start_trickplay_detection(jellyfin_playback.item_id);
         }
+    } else if (strncmp(argv[1], "webdav:play:", 12) == 0) {
+        if (resolve_webdav_input(argv[1], input_url, sizeof(input_url)) < 0)
+            return EXIT_SOURCE_FAILED;
+        input = input_url;
+        if (detect_format)
+            format_from_name(input_url, &format_name_guess);
     } else if (detect_format) {
         format_from_name(argv[1], &format_name_guess);
     }

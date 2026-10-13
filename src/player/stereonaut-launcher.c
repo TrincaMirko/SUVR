@@ -230,6 +230,21 @@ static void selected_parent(const char *path, char *directory, size_t size)
             snprintf(directory, size, "root:");
         return;
     }
+    if (strncmp(path, "webdav:play:", 12) == 0) {
+        /* webdav:play:<idx>:<file> returns to the folder it lives in. */
+        int index = atoi(path + 12);
+        const char *file = strchr(path + 12, ':');
+        file = file ? file + 1 : "/";
+        char dir[640];
+        snprintf(dir, sizeof(dir), "%s", file);
+        char *slash = strrchr(dir, '/');
+        if (slash)
+            slash[1] = '\0'; /* keep the trailing slash */
+        else
+            snprintf(dir, sizeof(dir), "/");
+        snprintf(directory, size, "webdav:srv:%d:%s", index, dir);
+        return;
+    }
     snprintf(directory, size, "%s", path);
     char *slash = strrchr(directory, '/');
     if (!slash || slash == directory)
@@ -329,13 +344,13 @@ int main(int argc, char **argv)
             fprintf(stderr, "playback failed; returning to browser\n");
             if (exit_code == EXIT_BROKEN_SOURCE)
                 snprintf(browser_message, sizeof(browser_message),
-                         "Videodatei auf dem Server defekt");
+                         "Video file on the server is corrupt");
             else if (exit_code == EXIT_SOURCE_FAILED)
                 snprintf(browser_message, sizeof(browser_message),
-                         "Jellyfin oder Netzwerk nicht erreichbar");
+                         "Jellyfin or network not reachable");
             else
                 snprintf(browser_message, sizeof(browser_message),
-                         "Video- oder Audioformat wird derzeit nicht unterstützt");
+                         "Video or audio format is not currently supported");
         }
         if (send_command(PLAYER_UI_BROWSE, directory, browser_message,
                          -1) < 0) {

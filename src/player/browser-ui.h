@@ -2,6 +2,7 @@
 #define STEREONAUT_BROWSER_UI_H
 
 #include "file-browser.h"
+#include "i18n.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -43,8 +44,24 @@ struct browser_ui {
     bool local_sort_descending;
     bool sort_menu_open;
     bool filter_menu_open;
-    bool keyboard_open;   /* on-screen keyboard of the search */
+    bool options_open;    /* options overlay (language choice) */
+    struct i18n_language languages[I18N_MAX_LANGUAGES]; /* snapshot while open */
+    int language_count;
+    /* On-screen keyboard: a reusable text-entry tool any field can summon
+     * (see keyboard_begin). It edits kb_target in place and reports commit
+     * or cancel through kb_purpose. */
+    bool keyboard_open;
+    int kb_purpose;       /* enum kb_purpose */
+    bool kb_shift;        /* uppercase letters */
+    bool kb_symbols;      /* symbol layer instead of letters */
+    bool kb_mask;         /* render the edited text as dots (passwords) */
+    char kb_title[48];    /* prompt shown above the keys */
+    char *kb_target;      /* buffer being edited (points into this struct) */
+    size_t kb_capacity;
     char query[64];       /* search text (UTF-8) */
+    char webdav_url[512]; /* add-server form fields */
+    char webdav_user[128];
+    char webdav_pass[256];
     size_t page;
     size_t selected_page; /* page of the last started title */
     char selected_title[256]; /* name of the last started title */

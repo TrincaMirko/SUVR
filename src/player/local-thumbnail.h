@@ -11,4 +11,10 @@
 int local_thumbnail_jpeg(const char *path, int max_width, char **data,
                          size_t *size);
 
+/* Same key frame, but from an http(s) URL (no sidecar lookup). `headers`,
+ * if set, are extra request headers (e.g. "Authorization: Basic ...\r\n")
+ * passed to libavformat for WebDAV Basic auth. */
+int local_thumbnail_url_jpeg(const char *url, const char *headers,
+                             int max_width, char **data, size_t *size);
+
 #endif
