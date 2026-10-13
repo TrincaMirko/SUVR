@@ -698,14 +698,16 @@ static struct file_browser_listing read_webdav(const char *path,
         char spec[1200];
         snprintf(spec, sizeof(spec), "webdav:%s:%d:%s",
                  entries[i].is_dir ? "srv" : "play", index, entries[i].path);
-        if (add_entry(&listing,
-                      entries[i].is_dir ? FILE_BROWSER_DIRECTORY
-                                        : FILE_BROWSER_MEDIA,
-                      entries[i].name, spec) == 0 &&
-            !entries[i].is_dir) {
-            /* Tile picture: a key frame streamed from the server. */
+        /* ponytail: no WebDAV tile thumbnails. Software-decoding 8K HEVC
+           keyframes in the renderer starved the hardware decoder's buffer
+           pool and broke actual playback (REQBUFS ENOMEM). Icon only. */
+        add_entry(&listing,
+                  entries[i].is_dir ? FILE_BROWSER_DIRECTORY
+                                    : FILE_BROWSER_MEDIA,
+                  entries[i].name, spec);
+        if (0) {
             char source[1200];
-            snprintf(source, sizeof(source), "webdav:%d:%s", index,
+            snprintf(source, sizeof(source), ""webdav:%d:%s", index,
                      entries[i].path);
             listing.entries[listing.entry_count - 1U].image = strdup(source);
         }
