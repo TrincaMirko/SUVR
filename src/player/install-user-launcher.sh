@@ -25,6 +25,17 @@ install -m 0755 \
     "$build_dir/stereonaut-session" \
     "$build_dir/stereonaut-renderer" \
     "$install_dir/"
+
+# 2D front-end (Rust suvr) \u2014 the REAL entry point: it browses and spawns the
+# player-only 3D core per title. Built with the device's rustup toolchain
+# (~/.cargo/bin is not on the default non-login PATH).
+export PATH="$HOME/.cargo/bin:$PATH"
+command -v cargo >/dev/null 2>&1 || {
+    echo "FATAL: cargo not found (install rustup); cannot build the suvr front-end" >&2
+    exit 1
+}
+( cd "$project_dir/suvr" && cargo build --release )
+install -m 0755 "$project_dir/suvr/target/release/suvr" "$install_dir/suvr"
 install -m 0644 \
     "$build_dir/video-projection.vert.spv" \
     "$build_dir/nv12-projection.frag.spv" \
@@ -156,7 +167,7 @@ if [ -d "$source_dir/.git" ] && command -v git >/dev/null 2>&1; then
     fi
 fi
 
-missing=$(missing_libraries stereonaut-launcher stereonaut-session \
+missing=$(missing_libraries suvr stereonaut-launcher stereonaut-session \
                             stereonaut-renderer)
 if [ -n "$missing" ]; then
     echo "missing libraries: $missing"
@@ -184,17 +195,21 @@ Stereonaut jetzt neu bauen? Das dauert etwa 10 Sekunden."; then
     echo "rebuild finished"
 fi
 
-# Own Turnip with TP10 sampling for HEVC Main10, if installed and still
-# loadable; otherwise Main10 is transcoded by Jellyfin.
+# TP10 Turnip is applied to the PLAYER subprocess only, by the front-end
+# (player.rs). Exporting the custom ICD here would break the 2D front-end's
+# gamescope swapchain, so we only sanity-check that it is present.
 if [ -f turnip/icd.json ]; then
     turnip_missing=$(missing_libraries turnip/libvulkan_freedreno.so)
-    if [ -z "$turnip_missing" ]; then
-        export VK_ICD_FILENAMES="$PWD/turnip/icd.json" STEREONAUT_TP10=1
-    else
-        echo "TP10 Turnip disabled, missing libraries: $turnip_missing"
-    fi
+    [ -z "$turnip_missing" ] ||
+        echo "WARNING: TP10 Turnip missing libraries: $turnip_missing; Main10 will transcode"
+else
+    echo "WARNING: TP10 Turnip not installed; Main10 will transcode"
 fi
-exec ./stereonaut-launcher ${1:+"$1"}
+
+# Launch the 2D front-end (browser). SUVR_PLAYER_DIR points at this install so
+# suvr finds stereonaut-launcher/session/renderer and turnip/icd.json here.
+export SUVR_PLAYER_DIR="$PWD" SUVR_LANG_DIR="$PWD/lang"
+exec ./suvr
 EOF
 chmod 0755 "$bin_dir/stereonaut.new"
 mv "$bin_dir/stereonaut.new" "$bin_dir/stereonaut"
