@@ -538,32 +538,12 @@ static void initialize_actions(struct app *app)
         int buttons; /* button_inputs: 0 none, 1 Index subset, 2 all */
         bool grip_value; /* has squeeze/value */
     } profiles[] = {
+        /* arm64/Steam Frame only: the Frame controller plus the simple
+         * fallback SteamVR maps to whatever is held. PC profiles (Index,
+         * Touch, WMR, Vive, Cosmos, generic) were removed with the PCVR path. */
         {"/interaction_profiles/valve/frame_controller",
          "trigger/value", "squeeze/click", true,
          app->has_valve_frame_controller, 2, true},
-        {"/interaction_profiles/khr/generic_controller",
-         "trigger/value", "squeeze/value", true, app->has_generic_controller,
-         0, true},
-        {"/interaction_profiles/valve/index_controller",
-         "trigger/value", "squeeze/value", true, true, 1, true},
-        /* The common PCVR profiles use the same core affordances as Index:
-         * trigger for pointing, squeeze for panel grab and a thumbstick for
-         * seek/volume. Keep face-button suggestions to Index: their names
-         * and hands differ between Touch, WMR and Vive. */
-        {"/interaction_profiles/oculus/touch_controller",
-         "trigger/value", "squeeze/value", true,
-         app->has_pcvr_controller, 0, true},
-        {"/interaction_profiles/microsoft/motion_controller",
-         "trigger/value", "squeeze/value", true,
-         app->has_pcvr_controller, 0, true},
-        {"/interaction_profiles/htc/vive_cosmos_controller",
-         "trigger/value", "squeeze/click", true,
-         app->has_pcvr_controller, 0, false},
-        /* Original Vive wands expose a trackpad rather than a thumbstick;
-         * it is still a Vector2f input and maps naturally to navigation. */
-        {"/interaction_profiles/htc/vive_controller",
-         "trigger/value", "squeeze/click", true,
-         app->has_pcvr_controller, 0, false},
         /* No squeeze button or stick: panel grab, show/hide, page flips and
          * stick seeking are unavailable. */
         {"/interaction_profiles/khr/simple_controller",

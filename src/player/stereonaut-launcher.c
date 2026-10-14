@@ -218,43 +218,6 @@ static int run_playback(const char *path, char *const *extra, int *exit_code)
     }
 }
 
-static void selected_parent(const char *path, char *directory, size_t size)
-{
-    if (strncmp(path, "jf:item:", 8) == 0) {
-        /* jf:item:<id>:<folder> returns to the folder it was chosen in;
-         * titles from the start page ("continue watching") have none. */
-        const char *folder = strchr(path + 8, ':');
-        if (folder && folder[1] == '?') /* search results */
-            snprintf(directory, size, "jf:search:%s", folder + 2);
-        else if (folder && folder[1])
-            snprintf(directory, size, "jf:view:%s", folder + 1);
-        else
-            snprintf(directory, size, "root:");
-        return;
-    }
-    if (strncmp(path, "webdav:play:", 12) == 0) {
-        /* webdav:play:<idx>:<file> returns to the folder it lives in. */
-        int index = atoi(path + 12);
-        const char *file = strchr(path + 12, ':');
-        file = file ? file + 1 : "/";
-        char dir[640];
-        snprintf(dir, sizeof(dir), "%s", file);
-        char *slash = strrchr(dir, '/');
-        if (slash)
-            slash[1] = '\0'; /* keep the trailing slash */
-        else
-            snprintf(dir, sizeof(dir), "/");
-        snprintf(directory, size, "webdav:srv:%d:%s", index, dir);
-        return;
-    }
-    snprintf(directory, size, "%s", path);
-    char *slash = strrchr(directory, '/');
-    if (!slash || slash == directory)
-        snprintf(directory, size, "/");
-    else
-        *slash = '\0';
-}
-
 static void shutdown_host(void)
 {
     if (ui_fd >= 0) {
@@ -311,92 +274,23 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
     signal(SIGPIPE, SIG_IGN);
+    /* Player-only: the 2D Rust front-end (suvr) does all browsing and always
+     * invokes `--play PATH`. The old in-VR browser loop is gone. */
     bool play_only = argc >= 3 && strcmp(argv[1], "--play") == 0;
-    if ((!play_only && argc > 2) || (argc >= 2 && !play_only &&
-                                      strncmp(argv[1], "--", 2) == 0)) {
-        fprintf(stderr,
-                "usage: %s [INITIAL_LOCATION]\n"
-                "       %s --play PATH [SESSION_ARGS...]\n",
-                argv[0], argv[0]);
+    if (!play_only) {
+        fprintf(stderr, "usage: %s --play PATH [SESSION_ARGS...]\n", argv[0]);
         return 2;
     }
     if (start_host() < 0)
         return 1;
-    if (play_only) {
-        /* Bounded test run: attach one session, then leave. */
-        if (send_command(PLAYER_UI_BROWSE, "root:", NULL, -1) < 0) {
-            shutdown_host();
-            return 1;
-        }
-        int exit_code = 0;
-        int result = run_playback(argv[2], &argv[3], &exit_code);
-        shutdown_host();
-        return result < 0 ? (exit_code > 0 ? exit_code : 1) : 0;
-    }
-    const char *initial = argc == 2 ? argv[1] : "root:";
-    if (!initial[0])
-        initial = "root:";
-    char directory[PLAYER_UI_PATH_MAX];
-    char browser_message[PLAYER_UI_MESSAGE_MAX] = {0};
-    snprintf(directory, sizeof(directory), "%s", initial);
-    if (send_command(PLAYER_UI_BROWSE, directory, NULL, -1) < 0) {
+    /* The host still starts in browser mode, then switches to player on PLAY.
+     * BROWSE here is just the one-shot init before attaching the session. */
+    if (send_command(PLAYER_UI_BROWSE, "root:", NULL, -1) < 0) {
         shutdown_host();
         return 1;
     }
-    for (;;) {
-        struct player_ui_result result = {0};
-        ssize_t received;
-        do {
-            received = recv(ui_fd, &result, sizeof(result), 0);
-        } while (received < 0 && errno == EINTR);
-        if (received != (ssize_t)sizeof(result)) {
-            fprintf(stderr, "XR host ended\n");
-            shutdown_host();
-            return 0;
-        }
-        if (result.type == PLAYER_UI_EXIT_REQUESTED) {
-            shutdown_host();
-            return 0;
-        }
-        if (result.type != PLAYER_UI_FILE_SELECTED || !result.path[0]) {
-            fprintf(stderr, "XR host returned unknown action\n");
-            shutdown_host();
-            return 1;
-        }
-        selected_parent(result.path, directory, sizeof(directory));
-        printf("selected_file=%s\n", result.path);
-        int exit_code = 0;
-        browser_message[0] = '\0';
-        char start_text[32];
-        char *start_arguments[] = {"--start-us", start_text, NULL};
-        snprintf(start_text, sizeof(start_text), "%lld",
-                 (long long)result.start_us);
-        if (result.start_us > 0)
-            printf("selected_start_us=%s\n", start_text);
-        int played = run_playback(result.path,
-                                  result.start_us > 0 ? start_arguments
-                                                      : NULL,
-                                  &exit_code);
-        if (exit_after_playback) {
-            shutdown_host();
-            return 0;
-        }
-        if (played < 0) {
-            fprintf(stderr, "playback failed; returning to browser\n");
-            if (exit_code == EXIT_BROKEN_SOURCE)
-                snprintf(browser_message, sizeof(browser_message),
-                         "Video file on the server is corrupt");
-            else if (exit_code == EXIT_SOURCE_FAILED)
-                snprintf(browser_message, sizeof(browser_message),
-                         "Jellyfin or network not reachable");
-            else
-                snprintf(browser_message, sizeof(browser_message),
-                         "Video or audio format is not currently supported");
-        }
-        if (send_command(PLAYER_UI_BROWSE, directory, browser_message,
-                         -1) < 0) {
-            shutdown_host();
-            return 1;
-        }
-    }
+    int exit_code = 0;
+    int result = run_playback(argv[2], &argv[3], &exit_code);
+    shutdown_host();
+    return result < 0 ? (exit_code > 0 ? exit_code : 1) : 0;
 }

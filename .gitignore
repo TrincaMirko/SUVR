@@ -43,6 +43,8 @@ __pycache__/
 .ssh/
 *.pem
 *.key
+DEPLOY.local.md
+tools/rssh.py
 
 # External sources (Mesa for the TP10 experiment); our changes live as patches
 /third_party/

@@ -707,7 +707,7 @@ static struct file_browser_listing read_webdav(const char *path,
                   entries[i].name, spec);
         if (0) {
             char source[1200];
-            snprintf(source, sizeof(source), ""webdav:%d:%s", index,
+            snprintf(source, sizeof(source), "webdav:%d:%s", index,
                      entries[i].path);
             listing.entries[listing.entry_count - 1U].image = strdup(source);
         }
