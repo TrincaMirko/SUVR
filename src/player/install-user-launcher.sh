@@ -2,6 +2,7 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 build_dir="$script_dir/build"
 install_dir="$HOME/.local/lib/stereonaut"
 bin_dir="$HOME/.local/bin"
@@ -38,29 +39,40 @@ install -m 0644 \
 install -d "$install_dir/lang"
 install -m 0644 "$script_dir/lang/"* "$install_dir/lang/"
 
-# Optional: the Turnip build with TP10 sampling (tools/mesa-tp10), copied to
-# build/libvulkan_freedreno.so. Only Stereonaut loads it; it enables native
-# HEVC Main10. Without it Main10 is transcoded by Jellyfin as before.
+# TP10 Turnip (Mesa freedreno with Main10 sampling) — MANDATORY. Native HEVC
+# Main10 depends on it. Preferred source: build/libvulkan_freedreno.so (freshly
+# cross-built via tools/mesa-tp10); fallback: the committed prebuilt aarch64
+# binary (prebuilt/aarch64/). Fails hard if neither exists.
 turnip_dir="$install_dir/turnip"
-if [ -f "$build_dir/libvulkan_freedreno.so" ]; then
-    install -d "$turnip_dir"
-    install -m 0755 "$build_dir/libvulkan_freedreno.so" "$turnip_dir/"
-    printf '{"file_format_version": "1.0.1", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
-        "$turnip_dir/libvulkan_freedreno.so" >"$turnip_dir/icd.json"
-    chmod 0644 "$turnip_dir/icd.json"
-    printf 'installed TP10 Turnip: %s\n' "$turnip_dir"
+turnip_so="$build_dir/libvulkan_freedreno.so"
+[ -f "$turnip_so" ] || turnip_so="$project_dir/prebuilt/aarch64/libvulkan_freedreno.so"
+if [ ! -f "$turnip_so" ]; then
+    echo "FATAL: TP10 Turnip not found (build/ or prebuilt/aarch64/libvulkan_freedreno.so)" >&2
+    exit 1
 fi
+install -d "$turnip_dir"
+install -m 0755 "$turnip_so" "$turnip_dir/libvulkan_freedreno.so"
+printf '{"file_format_version": "1.0.1", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
+    "$turnip_dir/libvulkan_freedreno.so" >"$turnip_dir/icd.json"
+chmod 0644 "$turnip_dir/icd.json"
+if ldd "$turnip_dir/libvulkan_freedreno.so" 2>/dev/null | grep -q "not found"; then
+    echo "WARNING: TP10 Turnip has missing libraries (SteamOS update?); Main10 will" >&2
+    echo "         fall back to Jellyfin transcode until it is rebuilt from mesa." >&2
+fi
+printf 'installed TP10 Turnip: %s\n' "$turnip_dir"
 
 # A copy of the sources lets the launcher rebuild itself after a SteamOS
 # update has replaced a library it was linked against (see below). Skipped
 # when this script already runs from that copy.
 source_dir="${XDG_DATA_HOME:-$HOME/.local/share}/stereonaut/source"
-project_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
-if [ "$project_dir" != "$source_dir" ]; then
+# A git checkout at source_dir (what install.sh sets up) is kept intact so the
+# launcher can `git pull` it. Only fall back to a flat tar copy when installing
+# from some other tree that is not itself the source checkout.
+if [ "$project_dir" != "$source_dir" ] && [ ! -d "$source_dir/.git" ]; then
     rm -rf "$source_dir"
     install -d "$source_dir/src" "$source_dir/tools"
     (cd "$project_dir" && tar -cf - --exclude=src/player/build \
-        src/player tools/openxr-playback) | tar -C "$source_dir" -xf -
+        src/player tools/openxr-playback prebuilt) | tar -C "$source_dir" -xf -
     printf 'installed sources for rebuilds: %s\n' "$source_dir"
 fi
 
@@ -131,6 +143,18 @@ rebuild() {
     fi
     [ "$(cat "$status")" = 0 ]
 }
+
+# Auto-update from GitHub at launch (best-effort; offline or no git = skip).
+# A new upstream commit triggers a rebuild+reinstall before the player starts.
+if [ -d "$source_dir/.git" ] && command -v git >/dev/null 2>&1; then
+    before=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null || echo none)
+    git -C "$source_dir" pull --ff-only >/dev/null 2>&1 || true
+    after=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null || echo none)
+    if [ "$before" != "$after" ]; then
+        echo "update: $before -> $after; rebuilding"
+        rebuild || report_error "Automatisches Update fehlgeschlagen."
+    fi
+fi
 
 missing=$(missing_libraries stereonaut-launcher stereonaut-session \
                             stereonaut-renderer)
